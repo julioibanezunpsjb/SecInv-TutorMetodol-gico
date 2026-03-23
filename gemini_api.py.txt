@@ -1,0 +1,461 @@
+"""
+Módulo de integración con Gemini API para Mentor Epistemológico
+Incluye sistema de rotación de API keys y rate limiting
+"""
+
+import google.generativeai as genai
+from typing import Optional, List, Dict, Any
+import streamlit as st
+from datetime import datetime
+import json
+import re
+
+
+class GeminiAPIManager:
+    """
+    Gestor de Gemini API con rotación de keys y optimización de tokens
+    """
+    
+    # Modelo a utilizar
+    MODEL_NAME = "gemini-2.0-flash"  # Mayor cuota que 2.5-flash
+    
+    # Límites por API key (requests por día - plan gratuito)
+    DAILY_LIMIT_PER_KEY = 150  # Ajustar según el plan real
+    
+    # Máximo tokens de salida
+    MAX_OUTPUT_TOKENS = 2048
+    
+    # Temperature para creatividad
+    TEMPERATURE = 0.7
+    
+    def __init__(self):
+        # Cargar API Keys desde Streamlit Secrets o usar valor por defecto
+        self.API_KEYS = self._load_api_keys()
+        self.current_key_index = 0
+        self._configure_api()
+    
+    def _load_api_keys(self) -> list:
+        """Carga las API Keys desde Streamlit Secrets"""
+        keys = []
+        
+        # Intentar cargar desde Streamlit Secrets
+        try:
+            if hasattr(st, 'secrets') and 'api_keys' in st.secrets:
+                api_secrets = st.secrets['api_keys']
+                # Buscar todas las keys (key_1, key_2, etc.)
+                for key_name in sorted(api_secrets.keys()):
+                    if key_name.startswith('key_'):
+                        key_value = api_secrets[key_name]
+                        if key_value and key_value != "TU_API_KEY_AQUI":
+                            keys.append(key_value)
+        except Exception:
+            pass
+        
+        # Si no hay keys en secrets, usar key por defecto
+        if not keys:
+            keys = ["AIzaSyDHyxLKX9Xaoc_3LE9Cz5OuluWJFDgIYfg"]
+        
+        return keys
+    
+    def _configure_api(self, key_index: int = 0):
+        """Configura la API con una key específica"""
+        if key_index < len(self.API_KEYS):
+            genai.configure(api_key=self.API_KEYS[key_index])
+            self.current_key_index = key_index
+    
+    def get_next_available_key(self, db_usage_getter) -> Optional[int]:
+        """
+        Obtiene el índice de la siguiente API key disponible
+        basándose en el uso diario
+        """
+        for i in range(len(self.API_KEYS)):
+            daily_usage = db_usage_getter(i)
+            if daily_usage < self.DAILY_LIMIT_PER_KEY:
+                return i
+        return None
+    
+    def _clean_json_response(self, text: str) -> str:
+        """Limpia la respuesta JSON del modelo"""
+        # Remover marcadores de código
+        text = re.sub(r'```json\s*', '', text)
+        text = re.sub(r'```\s*', '', text)
+        text = text.strip()
+        
+        # Intentar extraer JSON válido
+        try:
+            # Buscar el primer { y el último }
+            start = text.find('{')
+            end = text.rfind('}')
+            if start != -1 and end != -1:
+                json_str = text[start:end+1]
+                # Validar que es JSON válido
+                json.loads(json_str)
+                return json_str
+        except json.JSONDecodeError:
+            pass
+        
+        return text
+    
+    def _extract_propuesta(self, response_text: str) -> str:
+        """
+        Extrae el contenido de 'propuesta' de una respuesta JSON
+        Si no es JSON, devuelve el texto limpio
+        """
+        try:
+            # Limpiar el texto primero
+            clean_text = self._clean_json_response(response_text)
+            
+            # Intentar parsear como JSON
+            data = json.loads(clean_text)
+            
+            # Si tiene 'propuesta', extraerla
+            if 'propuesta' in data:
+                return data['propuesta']
+            
+            # Si tiene otras estructuras comunes
+            if 'sugerencia' in data:
+                return data['sugerencia']
+            if 'contenido' in data:
+                return data['contenido']
+            if 'texto' in data:
+                return data['texto']
+            
+            # Si es una lista, tomar el primer elemento
+            if isinstance(data, list) and len(data) > 0:
+                if isinstance(data[0], str):
+                    return data[0]
+                elif isinstance(data[0], dict):
+                    return data[0].get('propuesta', data[0].get('texto', str(data[0])))
+            
+            # Si no tiene estructura conocida, devolver como string
+            return str(data)
+            
+        except json.JSONDecodeError:
+            # No es JSON, devolver texto limpio
+            return response_text.strip()
+    
+    def generar_sugerencia(
+        self,
+        prompt: str,
+        usuario_id: int = None,
+        db_manager = None,
+        max_tokens: int = None
+    ) -> Dict[str, Any]:
+        """
+        Genera una sugerencia usando Gemini API con manejo de errores robusto
+        """
+        result = {
+            'success': False,
+            'content': '',
+            'error': None,
+            'key_used': None,
+            'tokens_used': 0
+        }
+        
+        # Determinar key a usar
+        key_index = 0
+        if db_manager and usuario_id:
+            key_index = self.get_next_available_key(
+                lambda idx: db_manager.obtener_uso_total_api_key(idx)
+            )
+            if key_index is None:
+                result['error'] = 'Se han agotado las cuotas diarias de todas las API keys. Intente mañana o agregue más API keys.'
+                return result
+        
+        # Configurar API con la key seleccionada
+        self._configure_api(key_index)
+        
+        try:
+            # Crear modelo
+            model = genai.GenerativeModel(
+                model_name=self.MODEL_NAME,
+                generation_config=genai.types.GenerationConfig(
+                    max_output_tokens=max_tokens or self.MAX_OUTPUT_TOKENS,
+                    temperature=self.TEMPERATURE,
+                )
+            )
+            
+            # Generar respuesta
+            response = model.generate_content(prompt)
+            
+            if response and response.text:
+                # Extraer contenido limpio
+                clean_content = self._extract_propuesta(response.text)
+                
+                result['success'] = True
+                result['content'] = clean_content
+                result['key_used'] = key_index
+                result['tokens_used'] = len(response.text.split())
+                
+                # Registrar uso
+                if db_manager and usuario_id:
+                    db_manager.registrar_uso_api(
+                        usuario_id, 
+                        result['tokens_used'],
+                        'sugerencia',
+                        key_index
+                    )
+            else:
+                result['error'] = 'La API no devolvió contenido'
+                
+        except Exception as e:
+            error_msg = str(e)
+            if '429' in error_msg:
+                result['error'] = 'Cuota de API excedida. La solicitud se ha registrado pero no se pudo completar.'
+            elif 'quota' in error_msg.lower():
+                result['error'] = 'Se ha alcanzado el límite de uso de la API. Intente más tarde.'
+            elif 'invalid' in error_msg.lower() and 'key' in error_msg.lower():
+                result['error'] = 'API Key inválida. Verifique la configuración.'
+            else:
+                result['error'] = f'Error al generar sugerencia: {error_msg}'
+        
+        return result
+    
+    def generar_multiples_sugerencias(
+        self,
+        prompt: str,
+        cantidad: int = 3,
+        usuario_id: int = None,
+        db_manager = None
+    ) -> Dict[str, Any]:
+        """
+        Genera múltiples sugerencias en una sola llamada (más eficiente)
+        """
+        prompt_con_cantidad = f"""
+{prompt}
+
+Proporciona exactamente {cantidad} alternativas diferentes.
+Responde SOLO en formato JSON válido:
+{{
+    "sugerencias": [
+        {{"id": 1, "propuesta": "primera sugerencia"}},
+        {{"id": 2, "propuesta": "segunda sugerencia"}},
+        {{"id": 3, "propuesta": "tercera sugerencia"}}
+    ]
+}}
+"""
+        return self.generar_sugerencia(prompt_con_cantidad, usuario_id, db_manager)
+
+
+class PromptsMetodologicos:
+    """
+    Prompts optimizados para cada campo del Mentor Epistemológico
+    Diseñados para usar menos tokens y obtener respuestas más precisas
+    """
+    
+    # Prompt base del sistema
+    SYSTEM_PROMPT = """Eres un experto en metodología de la investigación académica.
+Responde de forma clara, precisa y actionable.
+Usa terminología académica apropiada para el nivel del investigador.
+Tus sugerencias deben ser coherentes metodológicamente entre sí."""
+    
+    @staticmethod
+    def prompt_titulo(tipo_proyecto: str, tema: str = None) -> str:
+        """Prompt para sugerir títulos"""
+        base = f"""{PromptsMetodologicos.SYSTEM_PROMPT}
+
+Sugiere un título para un proyecto de {tipo_proyecto}"""
+        if tema:
+            base += f" sobre: {tema}"
+        
+        base += """
+
+El título debe:
+- Ser específico y delimitado
+- Incluir variables o fenómenos de estudio
+- Tener máximo 15 palabras
+- Indicar el contexto o población cuando aplique
+
+Responde SOLO con el título sugerido, sin explicaciones adicionales."""
+        
+        return base
+    
+    @staticmethod
+    def prompt_problema(titulo: str, tipo_proyecto: str) -> str:
+        """Prompt para formular problema de investigación"""
+        return f"""{PromptsMetodologicos.SYSTEM_PROMPT}
+
+Para el proyecto "{titulo}" de tipo {tipo_proyecto}, formula:
+
+1. Un problema de investigación claro (2-3 oraciones)
+2. La pregunta de investigación principal
+3. Sub-preguntas relevantes (2-3 máximo)
+
+El problema debe:
+- Identificar una situación real que requiere solución o análisis
+- Estar delimitado espacial y temporalmente
+- Ser factible de investigar
+
+Responde en formato JSON:
+{{
+    "problema": "descripción del problema",
+    "pregunta_principal": "¿...?",
+    "sub_preguntas": ["¿...?", "¿...?"]
+}}"""
+    
+    @staticmethod
+    def prompt_objetivos(titulo: str, problema: str, tipo_proyecto: str) -> str:
+        """Prompt para formular objetivos"""
+        return f"""{PromptsMetodologicos.SYSTEM_PROMPT}
+
+Proyecto: "{titulo}"
+Problema: {problema}
+Tipo: {tipo_proyecto}
+
+Formula:
+1. Un objetivo general
+2. 3-4 objetivos específicos coherentes con el general
+
+Usa verbos operativos: analizar, determinar, evaluar, identificar, comparar, proponer, diseñar, implementar.
+
+Responde en JSON:
+{{
+    "objetivo_general": "Verbo + objeto + condición + contexto",
+    "objetivos_especificos": [
+        "Objetivo específico 1",
+        "Objetivo específico 2",
+        "Objetivo específico 3"
+    ]
+}}"""
+    
+    @staticmethod
+    def prompt_hipotesis(titulo: str, variables: list = None) -> str:
+        """Prompt para formular hipótesis"""
+        prompt = f"""{PromptsMetodologicos.SYSTEM_PROMPT}
+
+Proyecto: "{titulo}"
+"""
+        if variables:
+            prompt += f"Variables identificadas: {', '.join(variables)}\n"
+        
+        prompt += """
+Formula hipótesis de investigación y nulas si corresponde.
+
+Las hipótesis deben:
+- Relacionar variables de forma clara
+- Ser verificables empíricamente
+- Estar redactadas en futuro o condicional
+
+Responde en JSON:
+{
+    "hipotesis_principal": "Hipótesis de investigación",
+    "hipotesis_nula": "Hipótesis nula (si aplica)",
+    "variables": {
+        "independiente": "nombre y operacionalización",
+        "dependiente": "nombre y operacionalización",
+        "control": "variables de control si aplica"
+    }
+}"""
+        return prompt
+    
+    @staticmethod
+    def prompt_justificacion(titulo: str, problema: str, tipo_proyecto: str) -> str:
+        """Prompt para justificación"""
+        return f"""{PromptsMetodologicos.SYSTEM_PROMPT}
+
+Proyecto: "{titulo}"
+Problema: {problema}
+Tipo: {tipo_proyecto}
+
+Redacta una justificación que incluya:
+1. Relevancia teórica
+2. Relevancia práctica
+3. Relevancia social
+4. Viabilidad del estudio
+
+Longitud: 150-200 palabras.
+Responde SOLO con el texto de la justificación."""
+    
+    @staticmethod
+    def prompt_marco_teorico(titulo: str, tema: str, conceptos_clave: list = None) -> str:
+        """Prompt para estructura del marco teórico"""
+        prompt = f"""{PromptsMetodologicos.SYSTEM_PROMPT}
+
+Proyecto: "{titulo}"
+Tema: {tema}
+"""
+        if conceptos_clave:
+            prompt += f"Conceptos clave: {', '.join(conceptos_clave)}\n"
+        
+        prompt += """
+Sugiere una estructura de marco teórico con:
+1. Antecedentes de investigación (tipos de estudios previos)
+2. Bases teóricas (teorías y autores relevantes)
+3. Definición de términos básicos
+
+Responde en JSON:
+{
+    "antecedentes": ["Tipo de estudio a buscar 1", "Tipo de estudio 2"],
+    "bases_teoricas": [
+        {"teoria": "Nombre", "autores": "Autor principal", "aportes": "Qué aporta al estudio"}
+    ],
+    "terminos_clave": ["Término 1", "Término 2", "Término 3"]
+}"""
+        return prompt
+    
+    @staticmethod
+    def prompt_metodologia(
+        titulo: str, 
+        tipo_proyecto: str,
+        objetivos: list = None
+    ) -> str:
+        """Prompt para diseño metodológico"""
+        prompt = f"""{PromptsMetodologicos.SYSTEM_PROMPT}
+
+Proyecto: "{titulo}"
+Tipo: {tipo_proyecto}
+"""
+        if objetivos:
+            prompt += f"Objetivos: {objetivos}\n"
+        
+        prompt += """
+Sugiere el diseño metodológico incluyendo:
+1. Tipo y diseño de investigación
+2. Población y muestra
+3. Técnicas e instrumentos
+4. Procedimiento
+
+Responde en JSON:
+{
+    "tipo_investigacion": "Descriptiva/Correlacional/Explicativa/etc",
+    "diseno": "No experimental/Experimental/Cuasi-experimental",
+    "poblacion": "Descripción de la población",
+    "muestra": "Tamaño y tipo de muestreo",
+    "tecnicas": ["Técnica 1", "Técnica 2"],
+    "instrumentos": ["Instrumento 1", "Instrumento 2"],
+    "procedimiento": ["Paso 1", "Paso 2", "Paso 3"]
+}"""
+        return prompt
+    
+    @staticmethod
+    def prompt_temas_sugeridos(area: str, interes: str = None) -> str:
+        """Prompt para generar temas de investigación sugeridos"""
+        prompt = f"""{PromptsMetodologicos.SYSTEM_PROMPT}
+
+Área de interés: {area}
+"""
+        if interes:
+            prompt += f"Interés específico: {interes}\n"
+        
+        prompt += """
+Genera 5 temas de investigación actuales y relevantes que:
+- Sean viables metodológicamente
+- Tengan actualidad y pertinencia
+- Sean factibles de investigar en contexto latinoamericano
+
+Responde en JSON:
+{
+    "temas": [
+        {
+            "titulo": "Título del tema",
+            "descripcion": "Breve descripción de 1-2 líneas",
+            "tipo_sugerido": "Investigación/Desarrollo/Intervención",
+            "viabilidad": "Alta/Media"
+        }
+    ]
+}"""
+        return prompt
+
+
+# Instancia global del gestor de API
+gemini_manager = GeminiAPIManager()

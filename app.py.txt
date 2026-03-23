@@ -1,0 +1,1253 @@
+"""
+Mentor Epistemológico v6 - Streamlit Edition
+Aplicación para la formulación de proyectos de investigación
+Facultad de Ciencias Económicas - UNPSJB
+
+Autor: Sistema desarrollado con asistencia de IA
+Versión: 6.0 Streamlit
+"""
+
+import streamlit as st
+from datetime import datetime
+import json
+from typing import Dict, Any, Optional
+
+# Módulos propios
+from database import db, Database
+from gemini_api import gemini_manager, PromptsMetodologicos
+from export import exportador, ExportadorDocumentos
+
+# ==================== CONFIGURACIÓN DE PÁGINA ====================
+
+st.set_page_config(
+    page_title="Mentor Epistemológico",
+    page_icon="📚",
+    layout="wide",
+    initial_sidebar_state="expanded",
+    menu_items={
+        'About': "Mentor Epistemológico v6 - FCE-UNPSJB\nDesarrollado para la formulación de proyectos de investigación"
+    }
+)
+
+# ==================== ESTILOS CSS PERSONALIZADOS ====================
+
+st.markdown("""
+<style>
+    /* Header */
+    .main-header {
+        font-size: 2.5rem;
+        font-weight: 700;
+        color: #1E88E5;
+        text-align: center;
+        margin-bottom: 1rem;
+    }
+    
+    /* Subheader */
+    .sub-header {
+        font-size: 1.5rem;
+        color: #424242;
+        text-align: center;
+        margin-bottom: 2rem;
+    }
+    
+    /* Cards */
+    .card {
+        background-color: #f8f9fa;
+        border-radius: 10px;
+        padding: 1.5rem;
+        margin-bottom: 1rem;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    
+    /* Suggestion box */
+    .suggestion-box {
+        background-color: #e3f2fd;
+        border-left: 4px solid #1E88E5;
+        padding: 1rem;
+        margin: 1rem 0;
+        border-radius: 0 8px 8px 0;
+    }
+    
+    /* Step indicator */
+    .step-indicator {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 2rem;
+    }
+    
+    .step {
+        padding: 0.5rem 1rem;
+        border-radius: 20px;
+        font-weight: 500;
+    }
+    
+    .step.active {
+        background-color: #1E88E5;
+        color: white;
+    }
+    
+    .step.completed {
+        background-color: #4CAF50;
+        color: white;
+    }
+    
+    .step.pending {
+        background-color: #e0e0e0;
+        color: #757575;
+    }
+    
+    /* Magic wand button */
+    .magic-button {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border: none;
+        padding: 0.5rem 1rem;
+        border-radius: 20px;
+        cursor: pointer;
+        font-weight: 500;
+    }
+    
+    /* Success message */
+    .success-message {
+        background-color: #d4edda;
+        color: #155724;
+        padding: 1rem;
+        border-radius: 8px;
+        margin: 1rem 0;
+    }
+    
+    /* Error message */
+    .error-message {
+        background-color: #f8d7da;
+        color: #721c24;
+        padding: 1rem;
+        border-radius: 8px;
+        margin: 1rem 0;
+    }
+    
+    /* Scrollable suggestions */
+    .scrollable-suggestions {
+        max-height: 400px;
+        overflow-y: auto;
+        padding: 1rem;
+    }
+    
+    /* Widget labels */
+    label {
+        font-weight: 500 !important;
+    }
+    
+    /* Text area height */
+    .stTextArea textarea {
+        min-height: 100px !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# ==================== INICIALIZACIÓN DE SESIÓN ====================
+
+def init_session_state():
+    """Inicializa todas las variables de sesión necesarias"""
+    defaults = {
+        # Usuario
+        'usuario_id': None,
+        'usuario': None,
+        'autenticado': False,
+        'modo_registro': False,
+        
+        # Proyecto actual
+        'proyecto_id': None,
+        'proyecto_titulo': '',
+        'tipo_proyecto': 'Investigación',
+        'modo_trabajo': 'Estándar',
+        
+        # Datos del proyecto por paso
+        'paso_actual': 1,
+        'paso1': {
+            'titulo': '',
+            'problema': '',
+            'pregunta_principal': '',
+            'sub_preguntas': []
+        },
+        'paso2': {
+            'objetivo_general': '',
+            'objetivos_especificos': [],
+            'hipotesis': '',
+            'hipotesis_nula': '',
+            'variables': {}
+        },
+        'paso3': {
+            'justificacion': '',
+            'alcance': ''
+        },
+        'paso4': {
+            'antecedentes': '',
+            'bases_teoricas': '',
+            'definiciones': []
+        },
+        'paso5': {
+            'tipo_investigacion': '',
+            'diseno': '',
+            'poblacion': '',
+            'muestra': '',
+            'tecnicas': [],
+            'procedimiento': []
+        },
+        'paso6': {
+            'cronograma': '',
+            'presupuesto': ''
+        },
+        
+        # Sugerencias
+        'sugerencia_actual': None,
+        'mostrando_sugerencia': False,
+        
+        # UI
+        'mostrar_modal_guardar': False,
+        'mostrar_modal_cargar': False,
+    }
+    
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+init_session_state()
+
+# ==================== FUNCIONES DE UTILIDAD ====================
+
+def obtener_datos_proyecto() -> dict:
+    """Obtiene todos los datos del proyecto actual"""
+    return {
+        'paso1': st.session_state.paso1,
+        'paso2': st.session_state.paso2,
+        'paso3': st.session_state.paso3,
+        'paso4': st.session_state.paso4,
+        'paso5': st.session_state.paso5,
+        'paso6': st.session_state.paso6,
+    }
+
+def guardar_datos_paso(paso: int, datos: dict):
+    """Guarda los datos de un paso específico"""
+    st.session_state[f'paso{paso}'] = datos
+
+def generar_sugerencia_ia(campo: str, contexto: dict = None) -> Optional[str]:
+    """Genera una sugerencia usando la IA"""
+    contexto = contexto or {}
+    
+    prompts = {
+        'titulo': PromptsMetodologicos.prompt_titulo(
+            st.session_state.tipo_proyecto,
+            contexto.get('tema')
+        ),
+        'problema': PromptsMetodologicos.prompt_problema(
+            st.session_state.paso1.get('titulo', ''),
+            st.session_state.tipo_proyecto
+        ),
+        'pregunta': PromptsMetodologicos.prompt_problema(
+            st.session_state.paso1.get('titulo', ''),
+            st.session_state.tipo_proyecto
+        ),
+        'objetivos': PromptsMetodologicos.prompt_objetivos(
+            st.session_state.paso1.get('titulo', ''),
+            st.session_state.paso1.get('problema', ''),
+            st.session_state.tipo_proyecto
+        ),
+        'hipotesis': PromptsMetodologicos.prompt_hipotesis(
+            st.session_state.paso1.get('titulo', ''),
+            contexto.get('variables')
+        ),
+        'justificacion': PromptsMetodologicos.prompt_justificacion(
+            st.session_state.paso1.get('titulo', ''),
+            st.session_state.paso1.get('problema', ''),
+            st.session_state.tipo_proyecto
+        ),
+        'marco_teorico': PromptsMetodologicos.prompt_marco_teorico(
+            st.session_state.paso1.get('titulo', ''),
+            contexto.get('tema', ''),
+            contexto.get('conceptos')
+        ),
+        'metodologia': PromptsMetodologicos.prompt_metodologia(
+            st.session_state.paso1.get('titulo', ''),
+            st.session_state.tipo_proyecto,
+            st.session_state.paso2.get('objetivos_especificos', [])
+        ),
+    }
+    
+    prompt = prompts.get(campo)
+    if not prompt:
+        return None
+    
+    resultado = gemini_manager.generar_sugerencia(
+        prompt=prompt,
+        usuario_id=st.session_state.usuario_id,
+        db_manager=db
+    )
+    
+    if resultado['success']:
+        return resultado['content']
+    else:
+        st.error(resultado['error'])
+        return None
+
+def mostrar_sugerencia(sugerencia: str, campo_destino: str):
+    """Muestra la sugerencia con opción de aceptar o rechazar"""
+    if not sugerencia:
+        return
+    
+    st.markdown("### 💡 Sugerencia de la IA")
+    
+    # Contenedor con scroll para sugerencias largas
+    with st.container():
+        st.markdown(f"""
+        <div class="suggestion-box">
+            <p style="white-space: pre-wrap;">{sugerencia}</p>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    col1, col2, col3 = st.columns([1, 1, 4])
+    
+    with col1:
+        if st.button("✅ Usar", key=f"usar_{campo_destino}"):
+            # Actualizar el campo correspondiente
+            if campo_destino == 'titulo':
+                st.session_state.paso1['titulo'] = sugerencia
+            elif campo_destino == 'problema':
+                st.session_state.paso1['problema'] = sugerencia
+            elif campo_destino == 'pregunta':
+                st.session_state.paso1['pregunta_principal'] = sugerencia
+            elif campo_destino == 'objetivo_general':
+                st.session_state.paso2['objetivo_general'] = sugerencia
+            elif campo_destino == 'hipotesis':
+                st.session_state.paso2['hipotesis'] = sugerencia
+            elif campo_destino == 'justificacion':
+                st.session_state.paso3['justificacion'] = sugerencia
+            
+            st.rerun()
+    
+    with col2:
+        if st.button("🔄 Otra", key=f"otra_{campo_destino}"):
+            st.rerun()
+
+# ==================== COMPONENTES DE UI ====================
+
+def render_header():
+    """Renderiza el header principal"""
+    st.markdown("""
+        <div style="text-align: center; padding: 1rem 0;">
+            <h1 class="main-header">📚 Mentor Epistemológico</h1>
+            <p class="sub-header">Sistema de Formulación de Proyectos de Investigación</p>
+            <p style="color: #666;">Facultad de Ciencias Económicas - UNPSJB</p>
+        </div>
+    """, unsafe_allow_html=True)
+
+def render_step_indicator():
+    """Renderiza el indicador de pasos"""
+    pasos = ['Planteamiento', 'Objetivos', 'Justificación', 'Marco Teórico', 'Metodología', 'Cronograma']
+    
+    cols = st.columns(len(pasos))
+    
+    for i, (col, paso) in enumerate(zip(cols, pasos)):
+        with col:
+            paso_num = i + 1
+            if paso_num < st.session_state.paso_actual:
+                estado = "completed"
+                icon = "✅"
+            elif paso_num == st.session_state.paso_actual:
+                estado = "active"
+                icon = "🔵"
+            else:
+                estado = "pending"
+                icon = "⚪"
+            
+            st.markdown(f"""
+                <div style="text-align: center;">
+                    <span style="font-size: 1.2rem;">{icon}</span>
+                    <br>
+                    <span style="font-size: 0.8rem; color: {'#1E88E5' if estado == 'active' else '#666'};">{paso}</span>
+                </div>
+            """, unsafe_allow_html=True)
+
+def render_sidebar():
+    """Renderiza la barra lateral"""
+    with st.sidebar:
+        # Información del usuario
+        if st.session_state.autenticado:
+            usuario = st.session_state.usuario
+            st.markdown(f"""
+                <div style="background-color: #e3f2fd; padding: 1rem; border-radius: 10px; margin-bottom: 1rem;">
+                    <p style="margin: 0; font-weight: 500;">👤 {usuario['nombre']} {usuario['apellido']}</p>
+                    <p style="margin: 0; font-size: 0.85rem; color: #666;">{usuario['email']}</p>
+                </div>
+            """, unsafe_allow_html=True)
+            
+            if st.button("📂 Mis Proyectos", use_container_width=True):
+                st.session_state.mostrar_modal_cargar = True
+            
+            if st.button("💾 Guardar Proyecto", use_container_width=True):
+                st.session_state.mostrar_modal_guardar = True
+            
+            st.divider()
+            
+            # Configuración del proyecto
+            st.subheader("⚙️ Configuración")
+            
+            tipo = st.selectbox(
+                "Tipo de Proyecto",
+                ["Investigación", "Desarrollo", "Intervención"],
+                index=["Investigación", "Desarrollo", "Intervención"].index(st.session_state.tipo_proyecto)
+            )
+            st.session_state.tipo_proyecto = tipo
+            
+            modo = st.selectbox(
+                "Modo de Trabajo",
+                ["Guiado", "Estándar", "Experto"],
+                index=["Guiado", "Estándar", "Experto"].index(st.session_state.modo_trabajo)
+            )
+            st.session_state.modo_trabajo = modo
+            
+            st.divider()
+            
+            # Uso de API
+            uso_hoy = db.obtener_uso_diario(st.session_state.usuario_id)
+            limite = 150 * len(gemini_manager.API_KEYS)
+            
+            st.markdown(f"""
+                <div style="background-color: #fff3e0; padding: 1rem; border-radius: 10px;">
+                    <p style="margin: 0; font-weight: 500;">🔑 Uso de API hoy</p>
+                    <p style="margin: 0;">{uso_hoy} / {limite} solicitudes</p>
+                    <div style="background-color: #e0e0e0; border-radius: 5px; height: 10px; margin-top: 0.5rem;">
+                        <div style="background-color: #ff9800; border-radius: 5px; height: 10px; width: {min(uso_hoy/limite*100, 100)}%;"></div>
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
+            
+            st.divider()
+            
+            if st.button("🚪 Cerrar Sesión", use_container_width=True):
+                # Limpiar sesión
+                for key in list(st.session_state.keys()):
+                    del st.session_state[key]
+                init_session_state()
+                st.rerun()
+        
+        # Ayuda
+        st.divider()
+        st.markdown("""
+            <div style="font-size: 0.85rem; color: #666;">
+                <p><strong>🆘 Ayuda</strong></p>
+                <p>Usa la varita mágica 🪄 para obtener sugerencias de la IA.</p>
+                <p>El sistema te guiará paso a paso en la formulación de tu proyecto.</p>
+            </div>
+        """, unsafe_allow_html=True)
+
+# ==================== PANTALLAS DE AUTENTICACIÓN ====================
+
+def render_login():
+    """Renderiza la pantalla de login"""
+    render_header()
+    
+    st.markdown("### 🔐 Iniciar Sesión")
+    
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col2:
+        with st.form("login_form"):
+            email = st.text_input("📧 Email", placeholder="tu@email.com")
+            password = st.text_input("🔒 Contraseña", type="password")
+            
+            submit = st.form_submit_button("Iniciar Sesión", use_container_width=True)
+            
+            if submit:
+                if email and password:
+                    resultado = db.verificar_usuario(email, password)
+                    
+                    if resultado['success']:
+                        st.session_state.autenticado = True
+                        st.session_state.usuario = resultado['usuario']
+                        st.session_state.usuario_id = resultado['usuario']['id']
+                        st.success("¡Bienvenido/a!")
+                        st.rerun()
+                    else:
+                        st.error(resultado['error'])
+                else:
+                    st.error("Por favor complete todos los campos")
+        
+        st.divider()
+        
+        if st.button("📝 Registrarse", use_container_width=True):
+            st.session_state.modo_registro = True
+            st.rerun()
+
+def render_registro():
+    """Renderiza la pantalla de registro"""
+    render_header()
+    
+    st.markdown("### 📝 Registro de Nuevo Usuario")
+    
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col2:
+        with st.form("registro_form"):
+            col_a, col_b = st.columns(2)
+            
+            with col_a:
+                nombre = st.text_input("👤 Nombre", placeholder="Juan")
+            
+            with col_b:
+                apellido = st.text_input("👤 Apellido", placeholder="Pérez")
+            
+            dni = st.text_input("🪪 DNI", placeholder="12345678")
+            email = st.text_input("📧 Email", placeholder="tu@email.com")
+            
+            col_c, col_d = st.columns(2)
+            
+            with col_c:
+                password = st.text_input("🔒 Contraseña", type="password")
+            
+            with col_d:
+                password_confirm = st.text_input("🔒 Confirmar Contraseña", type="password")
+            
+            institucion = st.text_input("🏫 Institución (opcional)", placeholder="Universidad Nacional...")
+            
+            submit = st.form_submit_button("Registrarse", use_container_width=True)
+            
+            if submit:
+                # Validaciones
+                if not all([nombre, apellido, dni, email, password]):
+                    st.error("Por favor complete todos los campos obligatorios")
+                elif password != password_confirm:
+                    st.error("Las contraseñas no coinciden")
+                elif len(password) < 6:
+                    st.error("La contraseña debe tener al menos 6 caracteres")
+                else:
+                    resultado = db.crear_usuario(
+                        nombre=nombre,
+                        apellido=apellido,
+                        dni=dni,
+                        email=email,
+                        password=password,
+                        institucion=institucion
+                    )
+                    
+                    if resultado['success']:
+                        st.success("¡Usuario creado exitosamente! Ahora puede iniciar sesión.")
+                        st.session_state.modo_registro = False
+                        st.rerun()
+                    else:
+                        st.error(resultado['error'])
+        
+        st.divider()
+        
+        if st.button("🔙 Volver al Login", use_container_width=True):
+            st.session_state.modo_registro = False
+            st.rerun()
+
+# ==================== PASOS DEL FORMULARIO ====================
+
+def render_paso1():
+    """Paso 1: Planteamiento del Problema"""
+    st.markdown("## 📋 Paso 1: Planteamiento del Problema")
+    
+    if st.session_state.modo_trabajo == "Guiado":
+        st.info("""
+        💡 **Guía para el Planteamiento del Problema:**
+        
+        Un buen planteamiento del problema debe identificar claramente:
+        - Una situación que requiere análisis o solución
+        - El contexto espacial y temporal del problema
+        - La población o sector afectado
+        - La viabilidad de investigación
+        """)
+    
+    # Título
+    st.markdown("### 📌 Título del Proyecto")
+    
+    col_titulo, col_btn = st.columns([5, 1])
+    
+    with col_titulo:
+        titulo = st.text_input(
+            "Título provisional",
+            value=st.session_state.paso1.get('titulo', ''),
+            key="input_titulo",
+            label_visibility="collapsed"
+        )
+    
+    with col_btn:
+        if st.button("🪄", key="btn_titulo", help="Generar sugerencia de título"):
+            with st.spinner("Generando sugerencia..."):
+                sugerencia = generar_sugerencia_ia('titulo')
+                if sugerencia:
+                    st.session_state.sugerencia_actual = sugerencia
+                    st.session_state.campo_sugerencia = 'titulo'
+    
+    if titulo:
+        st.session_state.paso1['titulo'] = titulo
+        st.session_state.proyecto_titulo = titulo
+    
+    # Mostrar sugerencia si existe
+    if st.session_state.get('campo_sugerencia') == 'titulo' and st.session_state.get('sugerencia_actual'):
+        mostrar_sugerencia(st.session_state.sugerencia_actual, 'titulo')
+    
+    st.divider()
+    
+    # Problema
+    st.markdown("### ❓ Descripción del Problema")
+    
+    problema = st.text_area(
+        "Describa la situación problemática identificada",
+        value=st.session_state.paso1.get('problema', ''),
+        height=150,
+        key="input_problema"
+    )
+    
+    col_prob, col_btn_prob = st.columns([5, 1])
+    
+    with col_btn_prob:
+        if st.button("🪄", key="btn_problema", help="Generar sugerencia de problema"):
+            with st.spinner("Generando sugerencia..."):
+                sugerencia = generar_sugerencia_ia('problema')
+                if sugerencia:
+                    st.session_state.sugerencia_actual = sugerencia
+                    st.session_state.campo_sugerencia = 'problema'
+    
+    if problema:
+        st.session_state.paso1['problema'] = problema
+    
+    if st.session_state.get('campo_sugerencia') == 'problema' and st.session_state.get('sugerencia_actual'):
+        mostrar_sugerencia(st.session_state.sugerencia_actual, 'problema')
+    
+    st.divider()
+    
+    # Pregunta de investigación
+    st.markdown("### 🎯 Pregunta de Investigación")
+    
+    pregunta = st.text_input(
+        "Pregunta principal que guía la investigación",
+        value=st.session_state.paso1.get('pregunta_principal', ''),
+        key="input_pregunta"
+    )
+    
+    col_preg, col_btn_preg = st.columns([5, 1])
+    
+    with col_btn_preg:
+        if st.button("🪄", key="btn_pregunta", help="Generar sugerencia de pregunta"):
+            with st.spinner("Generando sugerencia..."):
+                sugerencia = generar_sugerencia_ia('pregunta')
+                if sugerencia:
+                    st.session_state.sugerencia_actual = sugerencia
+                    st.session_state.campo_sugerencia = 'pregunta'
+    
+    if pregunta:
+        st.session_state.paso1['pregunta_principal'] = pregunta
+    
+    if st.session_state.get('campo_sugerencia') == 'pregunta' and st.session_state.get('sugerencia_actual'):
+        mostrar_sugerencia(st.session_state.sugerencia_actual, 'pregunta')
+    
+    st.divider()
+    
+    # Sub-preguntas
+    st.markdown("### 📝 Sub-preguntas de Investigación")
+    
+    if st.session_state.modo_trabajo == "Guiado":
+        st.info("Las sub-preguntas desglosan la pregunta principal en aspectos específicos investigables.")
+    
+    num_subpreguntas = len(st.session_state.paso1.get('sub_preguntas', [])) or 1
+    
+    for i in range(max(num_subpreguntas, 1)):
+        subpregs = st.session_state.paso1.get('sub_preguntas', [])
+        valor = subpregs[i] if i < len(subpregs) else ""
+        
+        sp = st.text_input(
+            f"Sub-pregunta {i+1}",
+            value=valor,
+            key=f"subpreg_{i}"
+        )
+        
+        if sp and i < len(st.session_state.paso1.get('sub_preguntas', [])):
+            st.session_state.paso1['sub_preguntas'][i] = sp
+        elif sp:
+            if 'sub_preguntas' not in st.session_state.paso1:
+                st.session_state.paso1['sub_preguntas'] = []
+            st.session_state.paso1['sub_preguntas'].append(sp)
+    
+    if st.button("➕ Agregar otra sub-pregunta"):
+        if 'sub_preguntas' not in st.session_state.paso1:
+            st.session_state.paso1['sub_preguntas'] = []
+        st.session_state.paso1['sub_preguntas'].append('')
+        st.rerun()
+
+def render_paso2():
+    """Paso 2: Objetivos e Hipótesis"""
+    st.markdown("## 🎯 Paso 2: Objetivos e Hipótesis")
+    
+    if st.session_state.modo_trabajo == "Guiado":
+        st.info("""
+        💡 **Guía para Objetivos:**
+        
+        Los objetivos deben ser:
+        - **Claros**: Sin ambigüedad en su redacción
+        - **Precisos**: Delimitados en alcance
+        - **Verificables**: Evaluables al finalizar
+        - **Coherentes**: Relacionados entre sí
+        """)
+    
+    # Objetivo General
+    st.markdown("### 🎯 Objetivo General")
+    
+    obj_gen = st.text_area(
+        "Objetivo general del proyecto",
+        value=st.session_state.paso2.get('objetivo_general', ''),
+        height=80,
+        key="input_obj_general"
+    )
+    
+    col_obj, col_btn_obj = st.columns([5, 1])
+    
+    with col_btn_obj:
+        if st.button("🪄", key="btn_obj_general", help="Generar objetivos"):
+            with st.spinner("Generando sugerencia..."):
+                sugerencia = generar_sugerencia_ia('objetivos')
+                if sugerencia:
+                    st.session_state.sugerencia_actual = sugerencia
+                    st.session_state.campo_sugerencia = 'objetivo_general'
+    
+    if obj_gen:
+        st.session_state.paso2['objetivo_general'] = obj_gen
+    
+    if st.session_state.get('campo_sugerencia') == 'objetivo_general' and st.session_state.get('sugerencia_actual'):
+        mostrar_sugerencia(st.session_state.sugerencia_actual, 'objetivo_general')
+    
+    st.divider()
+    
+    # Objetivos Específicos
+    st.markdown("### 📋 Objetivos Específicos")
+    
+    num_obj_esp = len(st.session_state.paso2.get('objetivos_especificos', [])) or 3
+    
+    for i in range(max(num_obj_esp, 3)):
+        objs_esp = st.session_state.paso2.get('objetivos_especificos', [])
+        valor = objs_esp[i] if i < len(objs_esp) else ""
+        
+        oe = st.text_input(
+            f"Objetivo específico {i+1}",
+            value=valor,
+            key=f"obj_esp_{i}"
+        )
+        
+        if oe:
+            if i >= len(st.session_state.paso2.get('objetivos_especificos', [])):
+                if 'objetivos_especificos' not in st.session_state.paso2:
+                    st.session_state.paso2['objetivos_especificos'] = []
+                st.session_state.paso2['objetivos_especificos'].append(oe)
+            else:
+                st.session_state.paso2['objetivos_especificos'][i] = oe
+    
+    if st.button("➕ Agregar otro objetivo específico"):
+        if 'objetivos_especificos' not in st.session_state.paso2:
+            st.session_state.paso2['objetivos_especificos'] = []
+        st.session_state.paso2['objetivos_especificos'].append('')
+        st.rerun()
+    
+    st.divider()
+    
+    # Hipótesis
+    st.markdown("### 💡 Hipótesis")
+    
+    if st.session_state.tipo_proyecto == "Investigación":
+        hipotesis = st.text_area(
+            "Hipótesis de investigación",
+            value=st.session_state.paso2.get('hipotesis', ''),
+            height=80,
+            key="input_hipotesis"
+        )
+        
+        col_hip, col_btn_hip = st.columns([5, 1])
+        
+        with col_btn_hip:
+            if st.button("🪄", key="btn_hipotesis", help="Generar hipótesis"):
+                with st.spinner("Generando sugerencia..."):
+                    sugerencia = generar_sugerencia_ia('hipotesis')
+                    if sugerencia:
+                        st.session_state.sugerencia_actual = sugerencia
+                        st.session_state.campo_sugerencia = 'hipotesis'
+        
+        if hipotesis:
+            st.session_state.paso2['hipotesis'] = hipotesis
+        
+        if st.session_state.get('campo_sugerencia') == 'hipotesis' and st.session_state.get('sugerencia_actual'):
+            mostrar_sugerencia(st.session_state.sugerencia_actual, 'hipotesis')
+        
+        # Hipótesis nula
+        hip_nula = st.text_area(
+            "Hipótesis nula (opcional)",
+            value=st.session_state.paso2.get('hipotesis_nula', ''),
+            height=60,
+            key="input_hip_nula"
+        )
+        
+        if hip_nula:
+            st.session_state.paso2['hipotesis_nula'] = hip_nula
+    else:
+        st.info("Las hipótesis son opcionales para proyectos de Desarrollo o Intervención.")
+
+def render_paso3():
+    """Paso 3: Justificación"""
+    st.markdown("## 📝 Paso 3: Justificación")
+    
+    if st.session_state.modo_trabajo == "Guiado":
+        st.info("""
+        💡 **Guía para la Justificación:**
+        
+        Una buena justificación debe responder:
+        - ¿Por qué es importante este estudio?
+        - ¿Qué contribución hará al conocimiento?
+        - ¿A quiénes beneficiará?
+        - ¿Es viable de realizar?
+        """)
+    
+    # Justificación
+    justificacion = st.text_area(
+        "Justificación del estudio",
+        value=st.session_state.paso3.get('justificacion', ''),
+        height=200,
+        key="input_justificacion"
+    )
+    
+    col_just, col_btn_just = st.columns([5, 1])
+    
+    with col_btn_just:
+        if st.button("🪄", key="btn_justificacion", help="Generar justificación"):
+            with st.spinner("Generando sugerencia..."):
+                sugerencia = generar_sugerencia_ia('justificacion')
+                if sugerencia:
+                    st.session_state.sugerencia_actual = sugerencia
+                    st.session_state.campo_sugerencia = 'justificacion'
+    
+    if justificacion:
+        st.session_state.paso3['justificacion'] = justificacion
+    
+    if st.session_state.get('campo_sugerencia') == 'justificacion' and st.session_state.get('sugerencia_actual'):
+        mostrar_sugerencia(st.session_state.sugerencia_actual, 'justificacion')
+    
+    st.divider()
+    
+    # Alcance y delimitación
+    st.markdown("### 📍 Alcance y Delimitación")
+    
+    alcance = st.text_area(
+        "Describa el alcance espacial, temporal y poblacional del estudio",
+        value=st.session_state.paso3.get('alcance', ''),
+        height=100,
+        key="input_alcance"
+    )
+    
+    if alcance:
+        st.session_state.paso3['alcance'] = alcance
+
+def render_paso4():
+    """Paso 4: Marco Teórico"""
+    st.markdown("## 📚 Paso 4: Marco Teórico")
+    
+    if st.session_state.modo_trabajo == "Guiado":
+        st.info("""
+        💡 **Guía para el Marco Teórico:**
+        
+        El marco teórico debe incluir:
+        - **Antecedentes**: Estudios previos relacionados
+        - **Bases teóricas**: Teorías y modelos que sustentan el estudio
+        - **Definiciones**: Conceptos clave operacionalizados
+        """)
+    
+    # Antecedentes
+    st.markdown("### 📖 Antecedentes de la Investigación")
+    
+    antecedentes = st.text_area(
+        "Describa los estudios previos relacionados con su tema",
+        value=st.session_state.paso4.get('antecedentes', ''),
+        height=150,
+        key="input_antecedentes"
+    )
+    
+    if antecedentes:
+        st.session_state.paso4['antecedentes'] = antecedentes
+    
+    st.divider()
+    
+    # Bases teóricas
+    st.markdown("### 📐 Bases Teóricas")
+    
+    bases = st.text_area(
+        "Describa las teorías y modelos que sustentan su estudio",
+        value=st.session_state.paso4.get('bases_teoricas', ''),
+        height=150,
+        key="input_bases"
+    )
+    
+    if bases:
+        st.session_state.paso4['bases_teoricas'] = bases
+    
+    st.divider()
+    
+    # Definiciones
+    st.markdown("### 📝 Definición de Términos Básicos")
+    
+    num_def = len(st.session_state.paso4.get('definiciones', [])) or 3
+    
+    for i in range(max(num_def, 3)):
+        defs = st.session_state.paso4.get('definiciones', [])
+        valor = defs[i] if i < len(defs) else ""
+        
+        deff = st.text_input(
+            f"Concepto {i+1}",
+            value=valor,
+            key=f"def_{i}",
+            placeholder="Término: definición operacional"
+        )
+        
+        if deff:
+            if i >= len(st.session_state.paso4.get('definiciones', [])):
+                if 'definiciones' not in st.session_state.paso4:
+                    st.session_state.paso4['definiciones'] = []
+                st.session_state.paso4['definiciones'].append(deff)
+            else:
+                st.session_state.paso4['definiciones'][i] = deff
+    
+    if st.button("➕ Agregar otro concepto"):
+        if 'definiciones' not in st.session_state.paso4:
+            st.session_state.paso4['definiciones'] = []
+        st.session_state.paso4['definiciones'].append('')
+        st.rerun()
+
+def render_paso5():
+    """Paso 5: Diseño Metodológico"""
+    st.markdown("## 🔬 Paso 5: Diseño Metodológico")
+    
+    if st.session_state.modo_trabajo == "Guiado":
+        st.info("""
+        💡 **Guía para el Diseño Metodológico:**
+        
+        El diseño metodológico especifica:
+        - El tipo y diseño de investigación
+        - La población y muestra
+        - Las técnicas e instrumentos de recolección
+        - El procedimiento para la ejecución
+        """)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Tipo de investigación
+        tipo_inv = st.selectbox(
+            "Tipo de Investigación",
+            ["Descriptiva", "Correlacional", "Explicativa", "Exploratoria", "Mixta"],
+            index=["Descriptiva", "Correlacional", "Explicativa", "Exploratoria", "Mixta"].index(
+                st.session_state.paso5.get('tipo_investigacion', 'Descriptiva')
+            ) if st.session_state.paso5.get('tipo_investigacion') in ["Descriptiva", "Correlacional", "Explicativa", "Exploratoria", "Mixta"] else 0
+        )
+        st.session_state.paso5['tipo_investigacion'] = tipo_inv
+        
+        # Población
+        poblacion = st.text_area(
+            "Población",
+            value=st.session_state.paso5.get('poblacion', ''),
+            height=80,
+            key="input_poblacion"
+        )
+        if poblacion:
+            st.session_state.paso5['poblacion'] = poblacion
+    
+    with col2:
+        # Diseño
+        diseno = st.selectbox(
+            "Diseño de Investigación",
+            ["No experimental - Transversal", "No experimental - Longitudinal", 
+             "Experimental", "Cuasi-experimental", "Pre-experimental"],
+            index=["No experimental - Transversal", "No experimental - Longitudinal", 
+                   "Experimental", "Cuasi-experimental", "Pre-experimental"].index(
+                st.session_state.paso5.get('diseno', 'No experimental - Transversal')
+            ) if st.session_state.paso5.get('diseno') in ["No experimental - Transversal", "No experimental - Longitudinal", 
+                   "Experimental", "Cuasi-experimental", "Pre-experimental"] else 0
+        )
+        st.session_state.paso5['diseno'] = diseno
+        
+        # Muestra
+        muestra = st.text_area(
+            "Muestra",
+            value=st.session_state.paso5.get('muestra', ''),
+            height=80,
+            key="input_muestra"
+        )
+        if muestra:
+            st.session_state.paso5['muestra'] = muestra
+    
+    st.divider()
+    
+    # Técnicas e instrumentos
+    st.markdown("### 📊 Técnicas e Instrumentos")
+    
+    tecnicas = st.multiselect(
+        "Seleccione las técnicas de recolección de datos",
+        ["Encuesta", "Entrevista", "Observación", "Análisis documental", 
+         "Focus Group", "Test/Prueba estandarizada", "Análisis estadístico"],
+        default=st.session_state.paso5.get('tecnicas', [])
+    )
+    st.session_state.paso5['tecnicas'] = tecnicas
+    
+    st.divider()
+    
+    # Procedimiento
+    st.markdown("### 📋 Procedimiento")
+    
+    if st.session_state.modo_trabajo == "Guiado":
+        st.info("Describa las fases o etapas del proceso de investigación")
+    
+    num_proc = len(st.session_state.paso5.get('procedimiento', [])) or 4
+    
+    for i in range(max(num_proc, 4)):
+        procs = st.session_state.paso5.get('procedimiento', [])
+        valor = procs[i] if i < len(procs) else ""
+        
+        proc = st.text_input(
+            f"Fase {i+1}",
+            value=valor,
+            key=f"proc_{i}"
+        )
+        
+        if proc:
+            if i >= len(st.session_state.paso5.get('procedimiento', [])):
+                if 'procedimiento' not in st.session_state.paso5:
+                    st.session_state.paso5['procedimiento'] = []
+                st.session_state.paso5['procedimiento'].append(proc)
+            else:
+                st.session_state.paso5['procedimiento'][i] = proc
+    
+    if st.button("➕ Agregar otra fase"):
+        if 'procedimiento' not in st.session_state.paso5:
+            st.session_state.paso5['procedimiento'] = []
+        st.session_state.paso5['procedimiento'].append('')
+        st.rerun()
+
+def render_paso6():
+    """Paso 6: Cronograma y Presupuesto"""
+    st.markdown("## 📅 Paso 6: Cronograma y Presupuesto")
+    
+    if st.session_state.modo_trabajo == "Guiado":
+        st.info("""
+        💡 **Guía para Cronograma y Presupuesto:**
+        
+        El cronograma debe incluir:
+        - Actividades específicas con duración estimada
+        - Hitos o entregables importantes
+        - Recursos necesarios
+        - Presupuesto detallado (si aplica)
+        """)
+    
+    # Cronograma
+    st.markdown("### 📆 Cronograma de Actividades")
+    
+    cronograma = st.text_area(
+        "Describa las actividades y su distribución temporal",
+        value=st.session_state.paso6.get('cronograma', ''),
+        height=200,
+        key="input_cronograma"
+    )
+    
+    if cronograma:
+        st.session_state.paso6['cronograma'] = cronograma
+    
+    st.divider()
+    
+    # Presupuesto
+    st.markdown("### 💰 Presupuesto Estimado")
+    
+    presupuesto = st.text_area(
+        "Describa los recursos necesarios y su costo estimado",
+        value=st.session_state.paso6.get('presupuesto', ''),
+        height=150,
+        key="input_presupuesto"
+    )
+    
+    if presupuesto:
+        st.session_state.paso6['presupuesto'] = presupuesto
+
+# ==================== MODALES ====================
+
+def render_modal_guardar():
+    """Modal para guardar proyecto"""
+    if not st.session_state.mostrar_modal_guardar:
+        return
+    
+    with st.expander("💾 Guardar Proyecto", expanded=True):
+        titulo_default = st.session_state.paso1.get('titulo', '')
+        
+        titulo_guardar = st.text_input(
+            "Título del proyecto",
+            value=titulo_default,
+            key="titulo_guardar"
+        )
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("✅ Guardar", use_container_width=True):
+                if titulo_guardar:
+                    datos = obtener_datos_proyecto()
+                    
+                    resultado = db.guardar_proyecto(
+                        usuario_id=st.session_state.usuario_id,
+                        titulo=titulo_guardar,
+                        tipo_proyecto=st.session_state.tipo_proyecto,
+                        modo_trabajo=st.session_state.modo_trabajo,
+                        datos=datos
+                    )
+                    
+                    if resultado['success']:
+                        st.success(f"Proyecto guardado: {titulo_guardar}")
+                        st.session_state.proyecto_id = resultado['proyecto_id']
+                        st.session_state.proyecto_titulo = titulo_guardar
+                        st.session_state.mostrar_modal_guardar = False
+                    else:
+                        st.error(resultado.get('error', 'Error al guardar'))
+                else:
+                    st.error("Por favor ingrese un título para el proyecto")
+        
+        with col2:
+            if st.button("❌ Cancelar", use_container_width=True):
+                st.session_state.mostrar_modal_guardar = False
+                st.rerun()
+
+def render_modal_cargar():
+    """Modal para cargar proyectos guardados"""
+    if not st.session_state.mostrar_modal_cargar:
+        return
+    
+    with st.expander("📂 Mis Proyectos Guardados", expanded=True):
+        proyectos = db.listar_proyectos_usuario(st.session_state.usuario_id)
+        
+        if not proyectos:
+            st.info("No tienes proyectos guardados")
+            if st.button("Cerrar"):
+                st.session_state.mostrar_modal_cargar = False
+                st.rerun()
+            return
+        
+        for proyecto in proyectos:
+            with st.container():
+                col1, col2, col3 = st.columns([3, 2, 1])
+                
+                with col1:
+                    st.markdown(f"**{proyecto['titulo']}**")
+                    st.caption(f"{proyecto['tipo_proyecto']} | Modo: {proyecto['modo_trabajo']}")
+                
+                with col2:
+                    st.caption(f"Modificado: {proyecto['fecha_modificacion']}")
+                
+                with col3:
+                    if st.button("📂 Cargar", key=f"cargar_{proyecto['id']}"):
+                        resultado = db.cargar_proyecto(
+                            proyecto['id'],
+                            st.session_state.usuario_id
+                        )
+                        
+                        if resultado['success']:
+                            datos = resultado['proyecto']
+                            st.session_state.proyecto_id = datos['id']
+                            st.session_state.proyecto_titulo = datos['titulo']
+                            st.session_state.tipo_proyecto = datos['tipo_proyecto']
+                            st.session_state.modo_trabajo = datos['modo_trabajo']
+                            
+                            # Cargar datos de cada paso
+                            for i in range(1, 7):
+                                st.session_state[f'paso{i}'] = datos['datos'].get(f'paso{i}', {})
+                            
+                            st.success(f"Proyecto cargado: {datos['titulo']}")
+                            st.session_state.mostrar_modal_cargar = False
+                            st.rerun()
+        
+        if st.button("❌ Cerrar", use_container_width=True):
+            st.session_state.mostrar_modal_cargar = False
+            st.rerun()
+
+# ==================== APLICACIÓN PRINCIPAL ====================
+
+def main():
+    """Función principal de la aplicación"""
+    
+    # Verificar autenticación
+    if not st.session_state.autenticado:
+        if st.session_state.modo_registro:
+            render_registro()
+        else:
+            render_login()
+        return
+    
+    # Renderizar UI principal
+    render_header()
+    render_sidebar()
+    render_step_indicator()
+    
+    # Renderizar modales
+    render_modal_guardar()
+    render_modal_cargar()
+    
+    # Renderizar paso actual
+    pasos = {
+        1: render_paso1,
+        2: render_paso2,
+        3: render_paso3,
+        4: render_paso4,
+        5: render_paso5,
+        6: render_paso6
+    }
+    
+    pasos[st.session_state.paso_actual]()
+    
+    # Navegación entre pasos
+    st.divider()
+    
+    col_ant, col_info, col_sig = st.columns([1, 2, 1])
+    
+    with col_ant:
+        if st.session_state.paso_actual > 1:
+            if st.button("⬅️ Anterior", use_container_width=True):
+                st.session_state.paso_actual -= 1
+                st.rerun()
+    
+    with col_info:
+        paso_actual = st.session_state.paso_actual
+        total_pasos = 6
+        st.info(f"Paso {paso_actual} de {total_pasos}")
+    
+    with col_sig:
+        if st.session_state.paso_actual < 6:
+            if st.button("Siguiente ➡️", use_container_width=True):
+                st.session_state.paso_actual += 1
+                st.rerun()
+        else:
+            # Exportar en el último paso
+            if st.button("📄 Exportar a Word", use_container_width=True, type="primary"):
+                proyecto = {
+                    'titulo': st.session_state.proyecto_titulo,
+                    'tipo_proyecto': st.session_state.tipo_proyecto,
+                    'datos': obtener_datos_proyecto()
+                }
+                
+                buffer = exportador.exportar_proyecto_word(
+                    proyecto,
+                    st.session_state.usuario
+                )
+                
+                nombre_archivo = exportador.generar_nombre_archivo(
+                    proyecto,
+                    st.session_state.usuario
+                )
+                
+                st.download_button(
+                    label="📥 Descargar Documento",
+                    data=buffer,
+                    file_name=nombre_archivo,
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                )
+
+if __name__ == "__main__":
+    main()
