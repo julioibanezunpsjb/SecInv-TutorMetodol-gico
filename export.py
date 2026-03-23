@@ -1,308 +1,258 @@
+# -*- coding: utf-8 -*-
 """
-Módulo de exportación para Mentor Epistemológico
-Genera documentos Word y PDF
+Mentor Epistemológico - Exportación a Word
+Generación de documentos académicos en formato .docx
 """
 
 from docx import Document
-from docx.shared import Inches, Pt, Cm, RGBColor
-from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
+from docx.shared import Inches, Pt, Cm
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.style import WD_STYLE_TYPE
-from docx.enum.table import WD_TABLE_ALIGNMENT
 from datetime import datetime
-from io import BytesIO
-from typing import Dict, Any, Optional
-import streamlit as st
+from typing import Dict, Optional
+import os
 
 
-class ExportadorDocumentos:
+def export_to_word(datos: Dict, ruta_salida: str = None) -> Optional[str]:
     """
-    Genera documentos Word y PDF para proyectos de investigación
+    Exporta los datos del proyecto a un documento Word.
+    
+    Args:
+        datos: Diccionario con todos los datos del proyecto
+        ruta_salida: Ruta donde guardar el documento (opcional)
+        
+    Returns:
+        Ruta del archivo generado o None si falla
     """
-    
-    def __init__(self):
-        self.doc = None
-    
-    def _crear_documento_base(self, proyecto: Dict[str, Any], usuario: Dict[str, Any]) -> Document:
-        """Crea el documento base con estilos"""
+    try:
+        # Crear documento
         doc = Document()
         
         # Configurar estilos
-        style = doc.styles['Normal']
-        font = style.font
-        font.name = 'Arial'
-        font.size = Pt(12)
+        _configurar_estilos(doc)
         
-        # Configurar márgenes
-        sections = doc.sections
-        for section in sections:
-            section.top_margin = Cm(2.5)
-            section.bottom_margin = Cm(2.5)
-            section.left_margin = Cm(3)
-            section.right_margin = Cm(2.5)
+        # ════════════════════════════════════════════════════════════════════════
+        # PORTADA
+        # ════════════════════════════════════════════════════════════════════════
         
-        # Portada
-        self._agregar_portada(doc, proyecto, usuario)
-        
-        return doc
-    
-    def _agregar_portada(self, doc: Document, proyecto: Dict[str, Any], usuario: Dict[str, Any]):
-        """Agrega la portada al documento"""
-        # Espacio superior
-        for _ in range(3):
-            doc.add_paragraph()
-        
-        # Institución
-        institucion = doc.add_paragraph()
-        institucion.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run = institucion.add_run("FACULTAD DE CIENCIAS ECONÓMICAS")
-        run.font.size = Pt(14)
-        run.font.bold = True
-        
-        institucion2 = doc.add_paragraph()
-        institucion2.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run2 = institucion2.add_run("UNIVERSIDAD NACIONAL DE LA PATAGONIA SAN JUAN BOSCO")
-        run2.font.size = Pt(12)
-        
-        # Espacio
+        # Espaciado inicial
         for _ in range(4):
             doc.add_paragraph()
         
-        # Título
+        # Título principal
         titulo = doc.add_paragraph()
+        titulo_run = titulo.add_run(datos.get('titulo', 'Proyecto de Investigación'))
+        titulo_run.bold = True
+        titulo_run.font.size = Pt(18)
         titulo.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run_titulo = titulo.add_run(proyecto.get('titulo', 'Sin título').upper())
-        run_titulo.font.size = Pt(16)
-        run_titulo.font.bold = True
         
-        # Tipo de proyecto
-        tipo = doc.add_paragraph()
-        tipo.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run_tipo = tipo.add_run(f"\nProyecto de {proyecto.get('tipo_proyecto', 'Investigación')}")
-        run_tipo.font.size = Pt(14)
-        run_tipo.font.italic = True
+        doc.add_paragraph()
         
-        # Espacio
+        # Subtítulo
+        subtitulo = doc.add_paragraph()
+        subtitulo_run = subtitulo.add_run("PROYECTO DE INVESTIGACIÓN")
+        subtitulo_run.font.size = Pt(14)
+        subtitulo.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        
+        # Área
+        if datos.get('area'):
+            area = doc.add_paragraph()
+            area_run = area.add_run(f"Área: {datos['area']}")
+            area_run.font.size = Pt(12)
+            area.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        
+        # Espaciado
         for _ in range(6):
             doc.add_paragraph()
         
-        # Datos del autor
-        if usuario:
-            autor = doc.add_paragraph()
-            autor.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            run_autor = autor.add_run(f"Autor: {usuario.get('nombre', '')} {usuario.get('apellido', '')}")
-            run_autor.font.size = Pt(12)
-            
-            if usuario.get('dni'):
-                dni = doc.add_paragraph()
-                dni.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                run_dni = dni.add_run(f"DNI: {usuario.get('dni')}")
-                run_dni.font.size = Pt(12)
-            
-            if usuario.get('email'):
-                email = doc.add_paragraph()
-                email.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                run_email = email.add_run(f"Email: {usuario.get('email')}")
-                run_email.font.size = Pt(12)
-        
         # Fecha
-        for _ in range(3):
-            doc.add_paragraph()
-        
         fecha = doc.add_paragraph()
+        fecha_run = fecha.add_run(datetime.now().strftime("%B %Y"))
+        fecha_run.font.size = Pt(12)
         fecha.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        run_fecha = fecha.add_run(datetime.now().strftime("%B %Y"))
-        run_fecha.font.size = Pt(12)
         
         # Salto de página
         doc.add_page_break()
-    
-    def _agregar_seccion(self, doc: Document, titulo: str, contenido: str, nivel: int = 1):
-        """Agrega una sección con título y contenido"""
-        # Título de sección
-        heading = doc.add_heading(titulo, level=nivel)
-        heading.alignment = WD_ALIGN_PARAGRAPH.LEFT
         
-        # Contenido
-        if contenido:
-            # Dividir en párrafos
-            parrafos = contenido.split('\n\n')
-            for texto in parrafos:
-                if texto.strip():
-                    p = doc.add_paragraph(texto.strip())
-                    p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-                    p.paragraph_format.space_after = Pt(12)
-                    p.paragraph_format.line_spacing_rule = WD_LINE_SPACING.ONE_POINT_FIVE
-    
-    def _agregar_lista(self, doc: Document, titulo: str, items: list, nivel: int = 2):
-        """Agrega una sección con lista de items"""
-        if not items:
-            return
+        # ════════════════════════════════════════════════════════════════════════
+        # CONTENIDO
+        # ════════════════════════════════════════════════════════════════════════
         
-        heading = doc.add_heading(titulo, level=nivel)
-        heading.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        # 1. PROBLEMA DE INVESTIGACIÓN
+        doc.add_heading('1. PROBLEMA DE INVESTIGACIÓN', level=1)
         
-        for item in items:
-            if isinstance(item, dict):
-                # Item con sub-elementos
-                for key, value in item.items():
-                    p = doc.add_paragraph(style='List Bullet')
-                    if isinstance(value, list):
-                        run = p.add_run(f"{key}:")
-                        run.bold = True
-                        for subitem in value:
-                            sp = doc.add_paragraph(subitem, style='List Bullet 2')
-                    else:
-                        run = p.add_run(f"{key}: {value}")
-            else:
-                p = doc.add_paragraph(item, style='List Bullet')
-    
-    def exportar_proyecto_word(
-        self, 
-        proyecto: Dict[str, Any], 
-        usuario: Dict[str, Any]
-    ) -> BytesIO:
-        """
-        Exporta el proyecto completo a formato Word (.docx)
-        Retorna un objeto BytesIO para descarga
-        """
-        doc = self._crear_documento_base(proyecto, usuario)
-        datos = proyecto.get('datos', {})
+        if datos.get('problema'):
+            p = doc.add_paragraph()
+            p.add_run('Planteamiento del problema:').bold = True
+            doc.add_paragraph(datos['problema'])
+        else:
+            doc.add_paragraph('_' * 50)
         
-        # Índice
-        doc.add_heading("ÍNDICE", level=1)
-        indice_items = [
-            "1. Planteamiento del Problema",
-            "2. Objetivos de la Investigación",
-            "3. Justificación",
-            "4. Marco Teórico",
-            "5. Diseño Metodológico",
-            "6. Cronograma y Presupuesto"
-        ]
-        for item in indice_items:
-            p = doc.add_paragraph(item)
-            p.paragraph_format.space_after = Pt(6)
+        doc.add_paragraph()
         
-        doc.add_page_break()
+        # 2. OBJETIVOS
+        doc.add_heading('2. OBJETIVOS DE LA INVESTIGACIÓN', level=1)
         
-        # Paso 1: Planteamiento del Problema
-        paso1 = datos.get('paso1', {})
-        doc.add_heading("1. PLANTEAMIENTO DEL PROBLEMA", level=1)
+        # Objetivo General
+        doc.add_heading('2.1 Objetivo General', level=2)
+        if datos.get('objetivo_general'):
+            doc.add_paragraph(datos['objetivo_general'])
+        else:
+            doc.add_paragraph('_' * 50)
         
-        if paso1.get('titulo'):
-            self._agregar_seccion(doc, "Título Provisional", paso1['titulo'], 2)
+        doc.add_paragraph()
         
-        if paso1.get('problema'):
-            self._agregar_seccion(doc, "Descripción del Problema", paso1['problema'], 2)
+        # Objetivos Específicos
+        doc.add_heading('2.2 Objetivos Específicos', level=2)
+        if datos.get('objetivos_especificos'):
+            objetivos = datos['objetivos_especificos'].split('\n')
+            for obj in objetivos:
+                if obj.strip():
+                    p = doc.add_paragraph(obj.strip(), style='List Bullet')
+        else:
+            doc.add_paragraph('_' * 50)
         
-        if paso1.get('pregunta_principal'):
-            self._agregar_seccion(doc, "Pregunta de Investigación", paso1['pregunta_principal'], 2)
+        doc.add_paragraph()
         
-        if paso1.get('sub_preguntas'):
-            self._agregar_lista(doc, "Sub-preguntas", paso1['sub_preguntas'], 2)
+        # 3. HIPÓTESIS
+        doc.add_heading('3. HIPÓTESIS', level=1)
         
-        # Paso 2: Objetivos
-        paso2 = datos.get('paso2', {})
-        doc.add_heading("2. OBJETIVOS DE LA INVESTIGACIÓN", level=1)
+        if datos.get('sin_hipotesis'):
+            p = doc.add_paragraph()
+            p.add_run('Tipo de estudio sin hipótesis: ').bold = True
+            doc.add_paragraph(datos.get('justificacion_sin_hip', 
+                'El presente estudio es de carácter exploratorio/descriptivo, por lo cual no se formulan hipótesis.'))
+        elif datos.get('hipotesis'):
+            p = doc.add_paragraph()
+            p.add_run('Hipótesis de investigación:').bold = True
+            doc.add_paragraph(datos['hipotesis'])
+            
+            # Variables
+            if datos.get('variable_independiente') or datos.get('variable_dependiente'):
+                doc.add_paragraph()
+                p = doc.add_paragraph()
+                p.add_run('Variables:').bold = True
+                
+                if datos.get('variable_independiente'):
+                    p = doc.add_paragraph()
+                    p.add_run('• Variable independiente: ').bold = True
+                    p.add_run(datos['variable_independiente'])
+                
+                if datos.get('variable_dependiente'):
+                    p = doc.add_paragraph()
+                    p.add_run('• Variable dependiente: ').bold = True
+                    p.add_run(datos['variable_dependiente'])
+        else:
+            doc.add_paragraph('_' * 50)
         
-        if paso2.get('objetivo_general'):
-            self._agregar_seccion(doc, "Objetivo General", paso2['objetivo_general'], 2)
+        doc.add_paragraph()
         
-        if paso2.get('objetivos_especificos'):
-            self._agregar_lista(doc, "Objetivos Específicos", paso2['objetivos_especificos'], 2)
+        # 4. MARCO TEÓRICO
+        doc.add_heading('4. MARCO TEÓRICO', level=1)
         
-        if paso2.get('hipotesis'):
-            self._agregar_seccion(doc, "Hipótesis", paso2['hipotesis'], 2)
+        # Antecedentes
+        doc.add_heading('4.1 Antecedentes de la Investigación', level=2)
+        if datos.get('antecedentes'):
+            doc.add_paragraph(datos['antecedentes'])
+        else:
+            doc.add_paragraph('_' * 50)
         
-        if paso2.get('variables'):
-            self._agregar_lista(doc, "Variables", 
-                              [paso2['variables']] if isinstance(paso2['variables'], dict) 
-                              else paso2['variables'], 2)
+        # Bases teóricas
+        doc.add_heading('4.2 Bases Teóricas', level=2)
+        if datos.get('bases_teoricas'):
+            doc.add_paragraph(datos['bases_teoricas'])
+        else:
+            doc.add_paragraph('_' * 50)
         
-        # Paso 3: Justificación
-        paso3 = datos.get('paso3', {})
-        doc.add_heading("3. JUSTIFICACIÓN", level=1)
+        # Definición de términos
+        doc.add_heading('4.3 Definición de Términos Básicos', level=2)
+        if datos.get('definiciones'):
+            doc.add_paragraph(datos['definiciones'])
+        else:
+            doc.add_paragraph('_' * 50)
         
-        if paso3.get('justificacion'):
-            self._agregar_seccion(doc, "Justificación del Estudio", paso3['justificacion'], 2)
+        doc.add_paragraph()
         
-        if paso3.get('alcance'):
-            self._agregar_seccion(doc, "Alcance y Delimitación", paso3['alcance'], 2)
+        # 5. METODOLOGÍA
+        doc.add_heading('5. DISEÑO METODOLÓGICO', level=1)
         
-        # Paso 4: Marco Teórico
-        paso4 = datos.get('paso4', {})
-        doc.add_heading("4. MARCO TEÓRICO", level=1)
+        # Tipo y diseño
+        doc.add_heading('5.1 Tipo y Diseño de Investigación', level=2)
+        tipo = datos.get('tipo_estudio', 'Por definir')
+        diseño = datos.get('diseño', 'Por definir')
+        doc.add_paragraph(f"Tipo de estudio: {tipo}")
+        doc.add_paragraph(f"Diseño: {diseño}")
         
-        if paso4.get('antecedentes'):
-            self._agregar_seccion(doc, "Antecedentes de la Investigación", paso4['antecedentes'], 2)
+        # Población y muestra
+        doc.add_heading('5.2 Población y Muestra', level=2)
+        if datos.get('poblacion'):
+            p = doc.add_paragraph()
+            p.add_run('Población: ').bold = True
+            p.add_run(datos['poblacion'])
+        else:
+            doc.add_paragraph('Población: Por definir')
         
-        if paso4.get('bases_teoricas'):
-            self._agregar_seccion(doc, "Bases Teóricas", paso4['bases_teoricas'], 2)
+        if datos.get('muestra'):
+            p = doc.add_paragraph()
+            p.add_run('Muestra: ').bold = True
+            p.add_run(datos['muestra'])
+        else:
+            doc.add_paragraph('Muestra: Por definir')
         
-        if paso4.get('definiciones'):
-            self._agregar_lista(doc, "Definición de Términos Básicos", paso4['definiciones'], 2)
+        # Técnicas e instrumentos
+        doc.add_heading('5.3 Técnicas e Instrumentos de Recolección de Datos', level=2)
+        if datos.get('tecnicas'):
+            p = doc.add_paragraph()
+            p.add_run('Técnicas: ').bold = True
+            p.add_run(', '.join(datos['tecnicas']))
         
-        # Paso 5: Diseño Metodológico
-        paso5 = datos.get('paso5', {})
-        doc.add_heading("5. DISEÑO METODOLÓGICO", level=1)
+        if datos.get('instrumentos'):
+            p = doc.add_paragraph()
+            p.add_run('Instrumentos: ').bold = True
+            p.add_run(datos['instrumentos'])
         
-        if paso5.get('tipo_investigacion'):
-            self._agregar_seccion(doc, "Tipo de Investigación", paso5['tipo_investigacion'], 2)
+        doc.add_paragraph()
         
-        if paso5.get('diseno'):
-            self._agregar_seccion(doc, "Diseño de Investigación", paso5['diseno'], 2)
+        # 6. CRONOGRAMA (placeholder)
+        doc.add_heading('6. CRONOGRAMA DE ACTIVIDADES', level=1)
+        doc.add_paragraph('[El cronograma se desarrollará en etapas posteriores del proyecto]')
         
-        if paso5.get('poblacion'):
-            self._agregar_seccion(doc, "Población y Muestra", paso5['poblacion'], 2)
+        doc.add_paragraph()
         
-        if paso5.get('tecnicas'):
-            self._agregar_lista(doc, "Técnicas e Instrumentos", paso5['tecnicas'], 2)
+        # 7. REFERENCIAS (placeholder)
+        doc.add_heading('7. REFERENCIAS BIBLIOGRÁFICAS', level=1)
+        doc.add_paragraph('[Las referencias se agregarán según se desarrolle el marco teórico]')
         
-        if paso5.get('procedimiento'):
-            self._agregar_lista(doc, "Procedimiento", paso5['procedimiento'], 2)
+        # Guardar documento
+        if not ruta_salida:
+            nombre_archivo = f"proyecto_investigacion_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
+            ruta_salida = os.path.join('/tmp', nombre_archivo)
         
-        # Paso 6: Cronograma y Presupuesto
-        paso6 = datos.get('paso6', {})
-        doc.add_heading("6. CRONOGRAMA Y PRESUPUESTO", level=1)
+        # Asegurar que el directorio existe
+        os.makedirs(os.path.dirname(ruta_salida), exist_ok=True)
         
-        if paso6.get('cronograma'):
-            self._agregar_seccion(doc, "Cronograma de Actividades", paso6['cronograma'], 2)
+        doc.save(ruta_salida)
+        return ruta_salida
         
-        if paso6.get('presupuesto'):
-            self._agregar_seccion(doc, "Presupuesto Estimado", paso6['presupuesto'], 2)
-        
-        # Referencias (si existen)
-        if datos.get('referencias'):
-            doc.add_heading("REFERENCIAS BIBLIOGRÁFICAS", level=1)
-            refs = datos['referencias']
-            if isinstance(refs, list):
-                for ref in refs:
-                    p = doc.add_paragraph(ref, style='List Bullet')
-                    p.paragraph_format.space_after = Pt(6)
-            else:
-                self._agregar_seccion(doc, "", refs, 2)
-        
-        # Guardar en BytesIO
-        buffer = BytesIO()
-        doc.save(buffer)
-        buffer.seek(0)
-        
-        return buffer
-    
-    def generar_nombre_archivo(self, proyecto: Dict[str, Any], usuario: Dict[str, Any]) -> str:
-        """Genera un nombre de archivo único"""
-        titulo = proyecto.get('titulo', 'proyecto')
-        # Limpiar título para nombre de archivo
-        titulo_limpio = "".join(c for c in titulo if c.isalnum() or c in (' ', '-', '_'))
-        titulo_limpio = titulo_limpio[:50].strip()
-        
-        fecha = datetime.now().strftime("%Y%m%d")
-        
-        if usuario:
-            apellido = usuario.get('apellido', '').replace(' ', '_')
-            return f"{titulo_limpio}_{apellido}_{fecha}.docx"
-        
-        return f"{titulo_limpio}_{fecha}.docx"
+    except Exception as e:
+        print(f"Error al exportar a Word: {str(e)}")
+        return None
 
 
-# Instancia global
-exportador = ExportadorDocumentos()
+def _configurar_estilos(doc: Document):
+    """Configura los estilos del documento."""
+    
+    # Estilo para títulos principales
+    style = doc.styles['Heading 1']
+    style.font.size = Pt(14)
+    style.font.bold = True
+    
+    # Estilo para subtítulos
+    style = doc.styles['Heading 2']
+    style.font.size = Pt(12)
+    style.font.bold = True
+    
+    # Estilo para texto normal
+    style = doc.styles['Normal']
+    style.font.size = Pt(12)
+    style.font.name = 'Times New Roman'
