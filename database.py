@@ -1,368 +1,393 @@
+# -*- coding: utf-8 -*-
 """
-Módulo de base de datos para Mentor Epistemológico
-Maneja usuarios, proyectos y sesiones con SQLite
+Mentor Epistemológico - Base de Datos SQLite
+Manejo de usuarios y proyectos con aislamiento por usuario
 """
 
 import sqlite3
-import json
-import hashlib
-from datetime import datetime
-from pathlib import Path
 import bcrypt
+import json
+from datetime import datetime
+from typing import Optional, Dict, List, Any
+import os
 
 
 class Database:
-    """Gestor de base de datos SQLite para el Mentor Epistemológico"""
+    """
+    Clase para manejar la base de datos SQLite.
+    Proporciona aislamiento de datos entre usuarios.
+    """
     
-    def __init__(self, db_path: str = "mentor_db.sqlite"):
+    def __init__(self, db_path: str = "mentor_epistemologico.db"):
+        """
+        Inicializa la conexión a la base de datos.
+        
+        Args:
+            db_path: Ruta al archivo de base de datos
+        """
+        # Usar directorio del proyecto o directorio temporal
+        if db_path == "mentor_epistemologico.db":
+            # En Streamlit Cloud, usar directorio persistente si está disponible
+            persist_dir = os.environ.get("STREAMLIT_SERVER_PERSIST_DIR", "")
+            if persist_dir:
+                db_path = os.path.join(persist_dir, db_path)
+        
         self.db_path = db_path
-        self._init_database()
+        self._inicializar_db()
     
-    def _get_connection(self):
-        """Obtiene conexión a la base de datos"""
+    def _obtener_conexion(self) -> sqlite3.Connection:
+        """Obtiene una conexión a la base de datos."""
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
     
-    def _init_database(self):
-        """Inicializa las tablas de la base de datos"""
-        conn = self._get_connection()
+    def _inicializar_db(self):
+        """Crea las tablas si no existen."""
+        conn = self._obtener_conexion()
         cursor = conn.cursor()
         
         # Tabla de usuarios
-        cursor.execute('''
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS usuarios (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 nombre TEXT NOT NULL,
-                apellido TEXT NOT NULL,
-                dni TEXT UNIQUE NOT NULL,
                 email TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
                 institucion TEXT,
                 fecha_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 ultimo_acceso TIMESTAMP
             )
-        ''')
+        """)
         
         # Tabla de proyectos
-        cursor.execute('''
+        cursor.execute("""
             CREATE TABLE IF NOT EXISTS proyectos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 usuario_id INTEGER NOT NULL,
-                titulo TEXT NOT NULL,
-                tipo_proyecto TEXT NOT NULL,
-                modo_trabajo TEXT NOT NULL,
-                datos_json TEXT NOT NULL,
+                nombre TEXT NOT NULL,
+                datos_json TEXT,
                 fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                fecha_modificacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                version INTEGER DEFAULT 1,
-                FOREIGN KEY (usuario_id) REFERENCES usuarios (id)
+                fecha_actualizacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (usuario_id) REFERENCES usuarios (id) ON DELETE CASCADE
             )
-        ''')
-        
-        # Tabla de uso de API (para rate limiting)
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS api_usage (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                usuario_id INTEGER NOT NULL,
-                fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                tokens_usados INTEGER DEFAULT 0,
-                tipo_solicitud TEXT,
-                api_key_index INTEGER DEFAULT 0,
-                FOREIGN KEY (usuario_id) REFERENCES usuarios (id)
-            )
-        ''')
-        
-        # Tabla de sesiones
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS sesiones (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                usuario_id INTEGER NOT NULL,
-                token_sesion TEXT UNIQUE NOT NULL,
-                fecha_inicio TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                fecha_expiracion TIMESTAMP,
-                activa BOOLEAN DEFAULT TRUE,
-                FOREIGN KEY (usuario_id) REFERENCES usuarios (id)
-            )
-        ''')
+        """)
         
         conn.commit()
         conn.close()
     
-    # ==================== GESTIÓN DE USUARIOS ====================
+    # ═══════════════════════════════════════════════════════════════════════════
+    # MÉTODOS DE USUARIOS
+    # ═══════════════════════════════════════════════════════════════════════════
     
-    def crear_usuario(self, nombre: str, apellido: str, dni: str, 
-                      email: str, password: str, institucion: str = None) -> dict:
-        """Crea un nuevo usuario"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
+    def crear_usuario(self, nombre: str, email: str, password: str, 
+                      institucion: str = None) -> Optional[int]:
+        """
+        Crea un nuevo usuario.
         
+        Args:
+            nombre: Nombre completo del usuario
+            email: Email del usuario (único)
+            password: Contraseña en texto plano
+            institucion: Institución del usuario (opcional)
+            
+        Returns:
+            ID del usuario creado o None si falla
+        """
         try:
             # Hashear contraseña
-            password_hash = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+            password_hash = bcrypt.hashpw(
+                password.encode('utf-8'), 
+                bcrypt.gensalt()
+            ).decode('utf-8')
             
-            cursor.execute('''
-                INSERT INTO usuarios (nombre, apellido, dni, email, password_hash, institucion)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (nombre, apellido, dni, email, password_hash, institucion))
+            conn = self._obtener_conexion()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                INSERT INTO usuarios (nombre, email, password_hash, institucion)
+                VALUES (?, ?, ?, ?)
+            """, (nombre, email, password_hash, institucion))
             
             usuario_id = cursor.lastrowid
             conn.commit()
-            
-            return {
-                'success': True,
-                'usuario_id': usuario_id,
-                'mensaje': 'Usuario creado exitosamente'
-            }
-        except sqlite3.IntegrityError as e:
-            error_msg = str(e)
-            if 'dni' in error_msg.lower():
-                return {'success': False, 'error': 'El DNI ya está registrado'}
-            elif 'email' in error_msg.lower():
-                return {'success': False, 'error': 'El email ya está registrado'}
-            return {'success': False, 'error': 'Error al crear usuario'}
-        finally:
             conn.close()
-    
-    def verificar_usuario(self, email: str, password: str) -> dict:
-        """Verifica credenciales de usuario"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        
-        try:
-            cursor.execute('''
-                SELECT id, nombre, apellido, dni, email, password_hash, institucion
-                FROM usuarios WHERE email = ?
-            ''', (email,))
             
-            usuario = cursor.fetchone()
+            return usuario_id
             
-            if not usuario:
-                return {'success': False, 'error': 'Email no registrado'}
-            
-            if bcrypt.checkpw(password.encode('utf-8'), usuario['password_hash']):
-                # Actualizar último acceso
-                cursor.execute('''
-                    UPDATE usuarios SET ultimo_acceso = CURRENT_TIMESTAMP
-                    WHERE id = ?
-                ''', (usuario['id'],))
-                conn.commit()
-                
-                return {
-                    'success': True,
-                    'usuario': {
-                        'id': usuario['id'],
-                        'nombre': usuario['nombre'],
-                        'apellido': usuario['apellido'],
-                        'dni': usuario['dni'],
-                        'email': usuario['email'],
-                        'institucion': usuario['institucion']
-                    }
-                }
-            else:
-                return {'success': False, 'error': 'Contraseña incorrecta'}
-        finally:
-            conn.close()
-    
-    def obtener_usuario_por_id(self, usuario_id: int) -> dict:
-        """Obtiene un usuario por su ID"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        
-        try:
-            cursor.execute('''
-                SELECT id, nombre, apellido, dni, email, institucion, fecha_registro
-                FROM usuarios WHERE id = ?
-            ''', (usuario_id,))
-            
-            usuario = cursor.fetchone()
-            
-            if usuario:
-                return dict(usuario)
+        except sqlite3.IntegrityError:
+            # Email ya existe
             return None
-        finally:
-            conn.close()
-    
-    # ==================== GESTIÓN DE PROYECTOS ====================
-    
-    def guardar_proyecto(self, usuario_id: int, titulo: str, tipo_proyecto: str,
-                        modo_trabajo: str, datos: dict) -> dict:
-        """Guarda o actualiza un proyecto"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        
-        try:
-            datos_json = json.dumps(datos, ensure_ascii=False)
-            
-            # Verificar si existe un proyecto con el mismo título para este usuario
-            cursor.execute('''
-                SELECT id, version FROM proyectos 
-                WHERE usuario_id = ? AND titulo = ?
-            ''', (usuario_id, titulo))
-            
-            existente = cursor.fetchone()
-            
-            if existente:
-                # Actualizar proyecto existente
-                cursor.execute('''
-                    UPDATE proyectos 
-                    SET datos_json = ?, fecha_modificacion = CURRENT_TIMESTAMP,
-                        version = version + 1
-                    WHERE id = ?
-                ''', (datos_json, existente['id']))
-                
-                conn.commit()
-                return {
-                    'success': True,
-                    'proyecto_id': existente['id'],
-                    'mensaje': 'Proyecto actualizado exitosamente',
-                    'version': existente['version'] + 1
-                }
-            else:
-                # Crear nuevo proyecto
-                cursor.execute('''
-                    INSERT INTO proyectos (usuario_id, titulo, tipo_proyecto, modo_trabajo, datos_json)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (usuario_id, titulo, tipo_proyecto, modo_trabajo, datos_json))
-                
-                conn.commit()
-                return {
-                    'success': True,
-                    'proyecto_id': cursor.lastrowid,
-                    'mensaje': 'Proyecto guardado exitosamente',
-                    'version': 1
-                }
         except Exception as e:
-            return {'success': False, 'error': str(e)}
-        finally:
-            conn.close()
+            print(f"Error al crear usuario: {str(e)}")
+            return None
     
-    def listar_proyectos_usuario(self, usuario_id: int) -> list:
-        """Lista todos los proyectos de un usuario"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
+    def verificar_usuario(self, email: str, password: str) -> Optional[Dict]:
+        """
+        Verifica las credenciales de un usuario.
         
-        try:
-            cursor.execute('''
-                SELECT id, titulo, tipo_proyecto, modo_trabajo, 
-                       fecha_creacion, fecha_modificacion, version
-                FROM proyectos 
-                WHERE usuario_id = ?
-                ORDER BY fecha_modificacion DESC
-            ''', (usuario_id,))
+        Args:
+            email: Email del usuario
+            password: Contraseña en texto plano
             
-            proyectos = cursor.fetchall()
-            return [dict(p) for p in proyectos]
-        finally:
+        Returns:
+            Diccionario con datos del usuario o None si las credenciales son inválidas
+        """
+        try:
+            conn = self._obtener_conexion()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT id, nombre, email, institucion, password_hash
+                FROM usuarios
+                WHERE email = ?
+            """, (email,))
+            
+            row = cursor.fetchone()
             conn.close()
-    
-    def cargar_proyecto(self, proyecto_id: int, usuario_id: int) -> dict:
-        """Carga un proyecto específico"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        
-        try:
-            cursor.execute('''
-                SELECT id, titulo, tipo_proyecto, modo_trabajo, datos_json,
-                       fecha_creacion, fecha_modificacion, version
-                FROM proyectos 
-                WHERE id = ? AND usuario_id = ?
-            ''', (proyecto_id, usuario_id))
             
-            proyecto = cursor.fetchone()
-            
-            if proyecto:
-                datos = json.loads(proyecto['datos_json'])
-                return {
-                    'success': True,
-                    'proyecto': {
-                        'id': proyecto['id'],
-                        'titulo': proyecto['titulo'],
-                        'tipo_proyecto': proyecto['tipo_proyecto'],
-                        'modo_trabajo': proyecto['modo_trabajo'],
-                        'datos': datos,
-                        'fecha_creacion': proyecto['fecha_creacion'],
-                        'fecha_modificacion': proyecto['fecha_modificacion'],
-                        'version': proyecto['version']
+            if row:
+                # Verificar contraseña
+                if bcrypt.checkpw(
+                    password.encode('utf-8'), 
+                    row['password_hash'].encode('utf-8')
+                ):
+                    # Actualizar último acceso
+                    self._actualizar_ultimo_acceso(row['id'])
+                    
+                    return {
+                        'id': row['id'],
+                        'nombre': row['nombre'],
+                        'email': row['email'],
+                        'institucion': row['institucion']
                     }
-                }
-            return {'success': False, 'error': 'Proyecto no encontrado'}
-        finally:
-            conn.close()
-    
-    def eliminar_proyecto(self, proyecto_id: int, usuario_id: int) -> dict:
-        """Elimina un proyecto"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        
-        try:
-            cursor.execute('''
-                DELETE FROM proyectos WHERE id = ? AND usuario_id = ?
-            ''', (proyecto_id, usuario_id))
             
-            if cursor.rowcount > 0:
-                conn.commit()
-                return {'success': True, 'mensaje': 'Proyecto eliminado'}
-            return {'success': False, 'error': 'Proyecto no encontrado'}
-        finally:
-            conn.close()
+            return None
+            
+        except Exception as e:
+            print(f"Error al verificar usuario: {str(e)}")
+            return None
     
-    # ==================== GESTIÓN DE API USAGE ====================
-    
-    def registrar_uso_api(self, usuario_id: int, tokens: int = 0, 
-                          tipo_solicitud: str = None, api_key_index: int = 0):
-        """Registra el uso de la API para rate limiting"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        
+    def _actualizar_ultimo_acceso(self, usuario_id: int):
+        """Actualiza la fecha de último acceso del usuario."""
         try:
-            cursor.execute('''
-                INSERT INTO api_usage (usuario_id, tokens_usados, tipo_solicitud, api_key_index)
-                VALUES (?, ?, ?, ?)
-            ''', (usuario_id, tokens, tipo_solicitud, api_key_index))
+            conn = self._obtener_conexion()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                UPDATE usuarios
+                SET ultimo_acceso = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (usuario_id,))
+            
             conn.commit()
-        finally:
             conn.close()
+        except Exception as e:
+            print(f"Error al actualizar último acceso: {str(e)}")
     
-    def obtener_uso_diario(self, usuario_id: int, api_key_index: int = None) -> int:
-        """Obtiene el número de solicitudes del día para un usuario"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
+    def obtener_usuario_por_id(self, usuario_id: int) -> Optional[Dict]:
+        """
+        Obtiene un usuario por su ID.
         
-        try:
-            if api_key_index is not None:
-                cursor.execute('''
-                    SELECT COUNT(*) as total FROM api_usage 
-                    WHERE usuario_id = ? AND date(fecha) = date('now')
-                    AND api_key_index = ?
-                ''', (usuario_id, api_key_index))
-            else:
-                cursor.execute('''
-                    SELECT COUNT(*) as total FROM api_usage 
-                    WHERE usuario_id = ? AND date(fecha) = date('now')
-                ''', (usuario_id,))
+        Args:
+            usuario_id: ID del usuario
             
-            result = cursor.fetchone()
-            return result['total'] if result else 0
-        finally:
+        Returns:
+            Diccionario con datos del usuario o None
+        """
+        try:
+            conn = self._obtener_conexion()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT id, nombre, email, institucion, fecha_registro
+                FROM usuarios
+                WHERE id = ?
+            """, (usuario_id,))
+            
+            row = cursor.fetchone()
             conn.close()
+            
+            if row:
+                return dict(row)
+            return None
+            
+        except Exception as e:
+            print(f"Error al obtener usuario: {str(e)}")
+            return None
     
-    def obtener_uso_total_api_key(self, api_key_index: int) -> int:
-        """Obtiene el uso total del día para una API key específica"""
-        conn = self._get_connection()
-        cursor = conn.cursor()
+    # ═══════════════════════════════════════════════════════════════════════════
+    # MÉTODOS DE PROYECTOS
+    # ═══════════════════════════════════════════════════════════════════════════
+    
+    def crear_proyecto(self, usuario_id: int, nombre: str) -> Optional[int]:
+        """
+        Crea un nuevo proyecto para un usuario.
         
-        try:
-            cursor.execute('''
-                SELECT COUNT(*) as total FROM api_usage 
-                WHERE api_key_index = ? AND date(fecha) = date('now')
-            ''', (api_key_index,))
+        Args:
+            usuario_id: ID del usuario propietario
+            nombre: Nombre del proyecto
             
-            result = cursor.fetchone()
-            return result['total'] if result else 0
-        finally:
+        Returns:
+            ID del proyecto creado o None si falla
+        """
+        try:
+            conn = self._obtener_conexion()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                INSERT INTO proyectos (usuario_id, nombre, datos_json)
+                VALUES (?, ?, ?)
+            """, (usuario_id, nombre, json.dumps({})))
+            
+            proyecto_id = cursor.lastrowid
+            conn.commit()
             conn.close()
-
-
-# Instancia global de la base de datos
-db = Database()
+            
+            return proyecto_id
+            
+        except Exception as e:
+            print(f"Error al crear proyecto: {str(e)}")
+            return None
+    
+    def obtener_proyectos(self, usuario_id: int) -> List[tuple]:
+        """
+        Obtiene todos los proyectos de un usuario.
+        
+        Args:
+            usuario_id: ID del usuario
+            
+        Returns:
+            Lista de tuplas (id, nombre, fecha_actualizacion, datos_json)
+        """
+        try:
+            conn = self._obtener_conexion()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT id, nombre, fecha_actualizacion, datos_json
+                FROM proyectos
+                WHERE usuario_id = ?
+                ORDER BY fecha_actualizacion DESC
+            """, (usuario_id,))
+            
+            rows = cursor.fetchall()
+            conn.close()
+            
+            proyectos = []
+            for row in rows:
+                datos = json.loads(row['datos_json']) if row['datos_json'] else {}
+                proyectos.append((
+                    row['id'],
+                    row['nombre'],
+                    datetime.fromisoformat(row['fecha_actualizacion']) if row['fecha_actualizacion'] else None,
+                    datos
+                ))
+            
+            return proyectos
+            
+        except Exception as e:
+            print(f"Error al obtener proyectos: {str(e)}")
+            return []
+    
+    def obtener_proyecto(self, proyecto_id: int, usuario_id: int) -> Optional[Dict]:
+        """
+        Obtiene un proyecto específico, verificando que pertenezca al usuario.
+        
+        Args:
+            proyecto_id: ID del proyecto
+            usuario_id: ID del usuario (para verificación de propiedad)
+            
+        Returns:
+            Diccionario con datos del proyecto o None
+        """
+        try:
+            conn = self._obtener_conexion()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT id, nombre, datos_json, fecha_creacion, fecha_actualizacion
+                FROM proyectos
+                WHERE id = ? AND usuario_id = ?
+            """, (proyecto_id, usuario_id))
+            
+            row = cursor.fetchone()
+            conn.close()
+            
+            if row:
+                datos = json.loads(row['datos_json']) if row['datos_json'] else {}
+                return {
+                    'id': row['id'],
+                    'nombre': row['nombre'],
+                    'datos': datos,
+                    'fecha_creacion': row['fecha_creacion'],
+                    'fecha_actualizacion': row['fecha_actualizacion']
+                }
+            
+            return None
+            
+        except Exception as e:
+            print(f"Error al obtener proyecto: {str(e)}")
+            return None
+    
+    def actualizar_proyecto(self, usuario_id: int, proyecto_id: int, 
+                           datos: Dict) -> bool:
+        """
+        Actualiza los datos de un proyecto.
+        
+        Args:
+            usuario_id: ID del usuario (para verificación)
+            proyecto_id: ID del proyecto
+            datos: Diccionario con los datos a guardar
+            
+        Returns:
+            True si se actualizó correctamente, False si no
+        """
+        try:
+            conn = self._obtener_conexion()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                UPDATE proyectos
+                SET datos_json = ?, fecha_actualizacion = CURRENT_TIMESTAMP
+                WHERE id = ? AND usuario_id = ?
+            """, (json.dumps(datos), proyecto_id, usuario_id))
+            
+            affected = cursor.rowcount
+            conn.commit()
+            conn.close()
+            
+            return affected > 0
+            
+        except Exception as e:
+            print(f"Error al actualizar proyecto: {str(e)}")
+            return False
+    
+    def eliminar_proyecto(self, usuario_id: int, proyecto_id: int) -> bool:
+        """
+        Elimina un proyecto.
+        
+        Args:
+            usuario_id: ID del usuario (para verificación)
+            proyecto_id: ID del proyecto
+            
+        Returns:
+            True si se eliminó correctamente, False si no
+        """
+        try:
+            conn = self._obtener_conexion()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                DELETE FROM proyectos
+                WHERE id = ? AND usuario_id = ?
+            """, (proyecto_id, usuario_id))
+            
+            affected = cursor.rowcount
+            conn.commit()
+            conn.close()
+            
+            return affected > 0
+            
+        except Exception as e:
+            print(f"Error al eliminar proyecto: {str(e)}")
+            return False
