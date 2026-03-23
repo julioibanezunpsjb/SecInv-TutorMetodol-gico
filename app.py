@@ -166,26 +166,38 @@ def inicializar_sesion():
 def mostrar_progreso():
     """Muestra barra de progreso visual"""
     pasos_completados = sum(1 for k, v in st.session_state.datos_proyecto.items() 
-                           if v and k not in ["brainstorming", "area", "comentarios"])
+                           if v and k not in ["brainstorming", "area", "comentarios", "intereses_iniciales", "contexto", "ideas_generadas", "idea_seleccionada", "nombre_proyecto"])
     total_pasos = 6
-    porcentaje = int((pasos_completados / total_pasos) * 100)
+    porcentaje = min(100, max(0, int((pasos_completados / total_pasos) * 100)))
     
-    cols = st.columns(8)
-    for i, (num, info) in enumerate(PASOS_INVESTIGACION.items()):
+    # Crear columnas para el indicador visual (sin numerar la tormenta de ideas)
+    cols = st.columns(7)
+    pasos_visuales = [
+        ("💡", "Inicio"),
+        ("📝", "Título"),
+        ("❓", "Problema"),
+        ("🎯", "Objetivos"),
+        ("❗", "Hipótesis"),
+        ("📚", "Marco Teórico"),
+        ("📊", "Final")
+    ]
+    
+    for i, (icono, nombre) in enumerate(pasos_visuales):
         with cols[i]:
-            if num == 0:
-                estado = "✅" if st.session_state.brainstorming_realizado else "⬜"
-            elif num == 7:
-                estado = "🎯"
+            if i == 0:
+                estado = "✅" if st.session_state.brainstorming_realizado else icono
             else:
-                campo = ["titulo", "problema", "objetivo_general", "hipotesis", "marco_teorico", "metodologia"][num-1]
-                if num == 4:
-                    estado = "✅" if st.session_state.datos_proyecto.get("hipotesis") or st.session_state.datos_proyecto.get("sin_hipotesis") else "⬜"
+                campo = ["titulo", "problema", "objetivo_general", "hipotesis", "marco_teorico", "metodologia"][i-1]
+                if i == 4:  # Hipótesis
+                    estado = "✅" if st.session_state.datos_proyecto.get("hipotesis") or st.session_state.datos_proyecto.get("sin_hipotesis") else icono
                 else:
-                    estado = "✅" if st.session_state.datos_proyecto.get(campo) else "⬜"
+                    estado = "✅" if st.session_state.datos_proyecto.get(campo) else icono
             
             st.markdown(f"<div style='text-align: center; font-size: 20px;'>{estado}</div>", unsafe_allow_html=True)
-            st.caption(f"Paso {num}")
+            st.caption(nombre)
+    
+    st.progress(porcentaje)
+    st.caption(f"Progreso: {porcentaje}% completado")
     
     st.progress(porcentaje)
     st.caption(f"Progreso: {porcentaje}% completado")
