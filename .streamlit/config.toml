@@ -12,3 +12,6 @@ enableXsrfProtection = true
 
 [browser]
 gatherUsageStats = false
+
+# Para cambiar entre modo claro/oscuro, el usuario puede seleccionar en:
+# Menu (☰) → Settings → Theme
