@@ -33,25 +33,28 @@ AREAS_INVESTIGACION = [
     "Comercio Internacional",
     "Contabilidad",
     "Criptomonedas/Fintech",
+    "Derecho",
     "Economía",
     "Economía Ambiental/Sustentabilidad",
     "Finanzas",
+    "Geografía",
+    "Historia",
     "Marketing",
     "Recursos Humanos",
     "Turismo",
-    "Otra (especificar)"
+    "Otra Ciencia Social (especificar)"
 ]
 
 # Pasos del proceso de investigación
 PASOS_INVESTIGACION = {
-    0: {"nombre": "🎯 Tormenta de Ideas", "descripcion": "Exploración inicial del tema"},
-    1: {"nombre": "📝 Título Provisional", "descripcion": "Primera formulación"},
+    0: {"nombre": "💡 Inicio", "descripcion": "Tormenta de ideas"},
+    1: {"nombre": "📝 Título", "descripcion": "Título provisional"},
     2: {"nombre": "❓ Problema", "descripcion": "Delimitación del objeto de estudio"},
     3: {"nombre": "🎯 Objetivos", "descripcion": "General y específicos"},
     4: {"nombre": "❗ Hipótesis", "descripcion": "Respuestas tentativas"},
     5: {"nombre": "📚 Marco Teórico", "descripcion": "Fundamentos conceptuales"},
     6: {"nombre": "📐 Metodología", "descripcion": "Diseño y métodos"},
-    7: {"nombre": "📊 Finalización", "descripcion": "Revisión y exportación"}
+    7: {"nombre": "📊 Finalizar", "descripcion": "Revisión y exportación"}
 }
 
 # Glosario metodológico
@@ -170,7 +173,7 @@ def mostrar_progreso():
     total_pasos = 6
     porcentaje = min(100, max(0, int((pasos_completados / total_pasos) * 100)))
     
-    # Crear columnas para el indicador visual (sin numerar la tormenta de ideas)
+    # Crear columnas para el indicador visual
     cols = st.columns(7)
     pasos_visuales = [
         ("💡", "Inicio"),
@@ -195,9 +198,6 @@ def mostrar_progreso():
             
             st.markdown(f"<div style='text-align: center; font-size: 20px;'>{estado}</div>", unsafe_allow_html=True)
             st.caption(nombre)
-    
-    st.progress(porcentaje)
-    st.caption(f"Progreso: {porcentaje}% completado")
     
     st.progress(porcentaje)
     st.caption(f"Progreso: {porcentaje}% completado")
@@ -297,7 +297,7 @@ def guardar_proyecto_automatico(db: Database):
 def interfaz_login(db: Database):
     """Interfaz de inicio de sesión / registro"""
     st.title("🎓 Mentor Epistemológico")
-    st.markdown("### Sistema de Tutor Metodológico para Investigación en Ciencias Económicas")
+    st.markdown("### Sistema de Tutor Metodológico para Investigación en Ciencias Económicas y Ciencias Sociales")
     
     tab_login, tab_registro = st.tabs(["🔐 Iniciar Sesión", "📝 Registrarse"])
     
